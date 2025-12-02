@@ -2,7 +2,7 @@
  * GEMV FP4 Weight-Only Quantization Tests
  *
  * Benchmarks FP4 quantization for GEMV (M=1):
- * - Tests the cactus_matmul_f4_to_f16 kernel
+ * - Tests the cactus_matmul_f4_to_int32 kernel with cactus_int32_to_fp16_scaled conversion
  * - Compares against FP16 and INT8 baselines
  */
 
@@ -240,6 +240,7 @@ bool test_fp4_kernel_runs() {
 
     std::vector<int8_t> a(M * K);
     std::vector<int8_t> b(N * K);
+    std::vector<int32_t> c_i32(M * N);
     std::vector<__fp16> c(M * N);
 
     std::mt19937 rng(42);
@@ -248,7 +249,8 @@ bool test_fp4_kernel_runs() {
     for (size_t i = 0; i < M * K; ++i) a[i] = static_cast<int8_t>(dist(rng));
     for (size_t i = 0; i < N * K; ++i) b[i] = static_cast<int8_t>(dist(rng));
 
-    cactus_matmul_f4_to_f16(a.data(), b.data(), c.data(), M, K, N);
+    cactus_matmul_f4_to_int32(a.data(), b.data(), c_i32.data(), M, K, N);
+    cactus_int32_to_fp16_scaled(c_i32.data(), c.data(), M * N, 0.25f);
 
     // Just verify we got some output
     bool has_nonzero = false;
@@ -266,6 +268,7 @@ bool test_fp4_larger_sizes() {
 
     std::vector<int8_t> a(M * K);
     std::vector<int8_t> b(N * K);
+    std::vector<int32_t> c_i32(M * N);
     std::vector<__fp16> c(M * N);
 
     std::mt19937 rng(123);
@@ -274,7 +277,8 @@ bool test_fp4_larger_sizes() {
     for (size_t i = 0; i < M * K; ++i) a[i] = static_cast<int8_t>(dist(rng));
     for (size_t i = 0; i < N * K; ++i) b[i] = static_cast<int8_t>(dist(rng));
 
-    cactus_matmul_f4_to_f16(a.data(), b.data(), c.data(), M, K, N);
+    cactus_matmul_f4_to_int32(a.data(), b.data(), c_i32.data(), M, K, N);
+    cactus_int32_to_fp16_scaled(c_i32.data(), c.data(), M * N, 0.25f);
 
     bool has_nonzero = false;
     for (size_t i = 0; i < M * N; ++i) {
@@ -353,10 +357,12 @@ bool test_fp4_correctness() {
         }
 
         // Compute FP4 result (using packed input and weights)
+        std::vector<int32_t> output_i32_fp4(N);
         std::vector<__fp16> output_f16_fp4(N);
-        cactus_matmul_f4_to_f16(reinterpret_cast<const int8_t*>(input_fp4_packed.data()),
-                                reinterpret_cast<const int8_t*>(weights_fp4_packed.data()),
-                                output_f16_fp4.data(), M, K, N);
+        cactus_matmul_f4_to_int32(reinterpret_cast<const int8_t*>(input_fp4_packed.data()),
+                                  reinterpret_cast<const int8_t*>(weights_fp4_packed.data()),
+                                  output_i32_fp4.data(), M, K, N);
+        cactus_int32_to_fp16_scaled(output_i32_fp4.data(), output_f16_fp4.data(), N, 0.25f);
 
         // Compute errors and metrics
         std::vector<float> all_errors;
@@ -519,10 +525,12 @@ bool benchmark_gemv_comparison(TestUtils::TestRunner& runner) {
 
         // FP4 (using packed FP4 E2M1 weights - 2 values per byte)
         {
+            std::vector<int32_t> output_i32_fp4(N);
             std::vector<__fp16> output_fp4(N);
             double time = measure_time_ms([&]() {
-                cactus_matmul_f4_to_f16(input_i8.data(), reinterpret_cast<const int8_t*>(weights_fp4_packed.data()), output_fp4.data(), M, K, N);
+                cactus_matmul_f4_to_int32(input_i8.data(), reinterpret_cast<const int8_t*>(weights_fp4_packed.data()), output_i32_fp4.data(), M, K, N);
             });
+            cactus_int32_to_fp16_scaled(output_i32_fp4.data(), output_fp4.data(), N, 0.25f);
             double gflops = flops / (time * 1e6);
             snprintf(perf_str, sizeof(perf_str), "%.3f ms, %.2f GFLOPS", time, gflops);
             runner.log_performance(std::string("FP4 (") + sz.name + ")", perf_str);
