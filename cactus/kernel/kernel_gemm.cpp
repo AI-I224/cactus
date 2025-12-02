@@ -880,7 +880,7 @@ static inline int8x16_t load_f4_as_int8x16(const int8_t* ptr) {
     return decoded;
 }
 
-static void cactus_matmul_f4_to_int32_worker(const int8_t* a, const int8_t* b_transposed, int32_t* c,
+static void cactus_matmul_f4_to_int32_worker(const int8_t* a, const int8_t* b_transposed, float16_t* c,
                                  size_t M, size_t K, size_t N, size_t start_row, size_t end_row) {
     constexpr int TILE_M = 4;
     constexpr int TILE_N = 4;
@@ -949,14 +949,14 @@ static void cactus_matmul_f4_to_int32_worker(const int8_t* a, const int8_t* b_tr
                         sum += static_cast<int32_t>(a_val) * static_cast<int32_t>(b_val);
                     }
 
-                    c[row * N + col] = (sum + 2) >> 2;
+                    c[row * N + col] = sum / 4.f;
                 }
             }
         }
     }
 }
 
-void cactus_matmul_f4_to_int32(const int8_t* a, const int8_t* b_transposed, int32_t* c,
+void cactus_matmul_f4_to_f16(const int8_t* a, const int8_t* b_transposed, float16_t* c,
                                  size_t M, size_t K, size_t N) {
     if (M == 0) return;
 
@@ -1094,8 +1094,8 @@ void cactus_matmul_f4_to_int32(const int8_t* a, const int8_t* b_transposed, int3
                         for (int n = 0; n < MICRO_TILE_N; ++n) {
                             size_t col = col_block + n;
                             if (col >= col_end) continue;
-                            int32_t sum = (vaddvq_s32(accumulators[m][n]) + 2) >> 2;
-                            c[row * N + col] = sum;
+                            int32_t sum = vaddvq_s32(accumulators[m][n]);
+                            c[row * N + col] = sum / 4.f;
                         }
                     }
                 }
