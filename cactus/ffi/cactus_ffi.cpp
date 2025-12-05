@@ -19,7 +19,7 @@ using namespace cactus::ffi;
 struct CactusModelHandle {
     std::unique_ptr<Model> model;
     std::atomic<bool> should_stop;
-    std::vector<uint32_t> processed_tokens; 
+    std::vector<uint32_t> processed_tokens;
 
     CactusModelHandle() : should_stop(false) {}
 };
@@ -38,13 +38,99 @@ static bool matches_stop_sequence(const std::vector<uint32_t>& generated_tokens,
     return false;
 }
 
+static std::vector<float> compute_whisper_mel_from_pcm(
+    const int16_t* pcm_samples,
+    size_t num_samples,
+    int sample_rate_in
+) {
+    using namespace cactus::engine;
+
+    if (!pcm_samples) {
+        std::cerr << "ERROR: pcm_samples is null" << std::endl;
+        return {};
+    }
+    if (num_samples == 0) {
+        std::cerr << "ERROR: num_samples is zero" << std::endl;
+        return {};
+    }
+
+    std::vector<float> waveform_fp32(num_samples);
+    for (size_t i = 0; i < num_samples; i++) {
+        waveform_fp32[i] = static_cast<float>(pcm_samples[i]) / 32768.0f;
+    }
+
+    std::vector<float> waveform_16k = resample_to_16k_fp32(waveform_fp32, sample_rate_in);
+
+    if (waveform_16k.empty()) {
+        std::cerr << "ERROR: Resampled waveform is empty" << std::endl;
+        return {};
+    }
+
+    AudioProcessor::SpectrogramConfig cfg{};
+    cfg.n_fft        = 400;
+    cfg.frame_length = 400;
+    cfg.hop_length   = 160;
+    cfg.power        = 2.0f;
+    cfg.center       = true;
+    cfg.pad_mode     = "reflect";
+    cfg.onesided     = true;
+    cfg.dither       = 0.0f;
+    cfg.mel_floor    = 1e-10f;
+    cfg.log_mel      = "log10";
+    cfg.reference    = 1.0f;
+    cfg.min_value    = 1e-10f;
+    cfg.remove_dc_offset = true;
+
+    const size_t num_mel_filters = 80;
+    const size_t num_frequency_bins = cfg.n_fft / 2 + 1;
+
+    AudioProcessor ap;
+    ap.init_mel_filters(num_frequency_bins, num_mel_filters, 0.0f, 8000.0f, 16000);
+
+    std::vector<float> mel = ap.compute_spectrogram(waveform_16k, cfg);
+
+    if (mel.empty()) {
+        return mel;
+    }
+
+    size_t n_mels = num_mel_filters;
+    size_t n_frames = mel.size() / n_mels;
+
+    float max_val = -std::numeric_limits<float>::infinity();
+    for (float v : mel) {
+        if (v > max_val) max_val = v;
+    }
+    float min_allowed = max_val - 8.0f;
+
+    for (float& v : mel) {
+        if (v < min_allowed) v = min_allowed;
+        v = (v + 4.0f) / 4.0f;
+    }
+
+    const size_t target_frames = 3000;
+    if (n_frames != target_frames) {
+        std::vector<float> fixed(n_mels * target_frames, 0.0f);
+
+        size_t copy_frames = std::min(n_frames, target_frames);
+        for (size_t m = 0; m < n_mels; ++m) {
+            const float* src = &mel[m * n_frames];
+            float* dst = &fixed[m * target_frames];
+            std::copy(src, src + copy_frames, dst);
+        }
+
+        return fixed;
+    }
+
+    return mel;
+}
+
 static std::vector<float> compute_whisper_mel_from_wav(const std::string& wav_path) {
     using namespace cactus::engine;
     AudioFP32 audio = load_wav(wav_path);
     std::vector<float> waveform_16k = resample_to_16k_fp32(audio.samples, audio.sample_rate);
 
     AudioProcessor::SpectrogramConfig cfg{};
-    cfg.n_fft        = 400; 
+    cfg.n_fft        = 400;
     cfg.frame_length = 400;
     cfg.hop_length   = 160;
     cfg.power        = 2.0f;
@@ -161,7 +247,9 @@ int cactus_transcribe(
     size_t buffer_size,
     const char* options_json,
     cactus_token_callback callback,
-    void* user_data
+    void* user_data,
+    const uint8_t* pcm_buffer,
+    size_t pcm_buffer_size
 ) {
     if (!model) {
         std::string error_msg = last_error_message.empty() ? "Model not initialized. Check model path and files." : last_error_message;
@@ -169,8 +257,13 @@ int cactus_transcribe(
         return -1;
     }
 
-    if (!audio_file_path || !prompt || !response_buffer || buffer_size == 0) {
+    if (!prompt || !response_buffer || buffer_size == 0) {
         handle_error_response("Invalid parameters", response_buffer, buffer_size);
+        return -1;
+    }
+
+    if (!audio_file_path && (!pcm_buffer || pcm_buffer_size == 0)) {
+        handle_error_response("Either audio_file_path or pcm_buffer must be provided", response_buffer, buffer_size);
         return -1;
     }
 
@@ -186,7 +279,14 @@ int cactus_transcribe(
         parse_options_json(options_json ? options_json : "",
                           temperature, top_p, top_k, max_tokens, stop_sequences);
 
-        std::vector<float> mel_bins = compute_whisper_mel_from_wav(audio_file_path);
+        std::vector<float> mel_bins;
+        if (audio_file_path == nullptr) {
+            const int16_t* pcm_samples = reinterpret_cast<const int16_t*>(pcm_buffer);
+            size_t num_samples = pcm_buffer_size / 2;
+            mel_bins = compute_whisper_mel_from_pcm(pcm_samples, num_samples, 16000);
+        } else {
+            mel_bins = compute_whisper_mel_from_wav(audio_file_path);
+        }
 
         if (mel_bins.empty()) {
             handle_error_response("Computed mel spectrogram is empty", response_buffer, buffer_size);
