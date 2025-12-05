@@ -29,6 +29,13 @@ if(NOT APPLE)
     endif()
 endif()
 
+find_package(SDL2)
+if(SDL2_FOUND)
+    message(STATUS "Found SDL2: ${SDL2_LIBRARIES}")
+else()
+    message(STATUS "SDL2 not found; microphone tests will be skipped")
+endif()
+
 file(GLOB TEST_SOURCES "test*.cpp")
 list(REMOVE_ITEM TEST_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/test_utils.cpp")
 
@@ -37,14 +44,21 @@ foreach(TEST_FILE ${TEST_SOURCES})
     get_filename_component(TEST_NAME ${TEST_FILE} NAME_WE)
     add_executable(${TEST_NAME} ${TEST_FILE} test_utils.cpp)
     target_link_libraries(${TEST_NAME} PRIVATE ${CACTUS_LIB})
-    
+
     if(MMAN_LIB)
         target_link_libraries(${TEST_NAME} PRIVATE ${MMAN_LIB})
         message(STATUS "Test ${TEST_NAME} will link with -lmman")
     endif()
-    
+
+    if(SDL2_FOUND)
+        target_link_libraries(${TEST_NAME} PRIVATE ${SDL2_LIBRARIES})
+        target_include_directories(${TEST_NAME} PRIVATE ${SDL2_INCLUDE_DIRS})
+        target_compile_definitions(${TEST_NAME} PRIVATE HAVE_SDL2)
+        message(STATUS "Test ${TEST_NAME} will link with SDL2")
+    endif()
+
     target_include_directories(${TEST_NAME} PRIVATE ${CACTUS_ROOT})
-    
+
     message(STATUS "Added test: ${TEST_NAME}")
 endforeach()
 
