@@ -27,17 +27,19 @@ except ImportError:
     hf_hub_download = None  # type: ignore
 
 
-fp4_vals = np.array([-12, -8, -6, -4, -3, -2, -1, 0, 1, 2, 3, 4, 6, 8, 12], dtype=np.float32)
+FP4_VALS = np.array([-12, -8, -6, -4, -3, -2, -1, 0, 1, 2, 3, 4, 6, 8, 12], dtype=np.float32) * 9
+FP4_MAX = FP4_VALS.max()
+FP4_MIN = FP4_VALS.min()
 
 def vectorized_closest_fp4(normalized):
     flat = normalized.ravel()
 
-    clipped = np.clip(flat, -12.0, 12.0)
-    indices = np.searchsorted(fp4_vals, clipped)
-    indices = np.clip(indices, 1, len(fp4_vals) - 1)
+    clipped = np.clip(flat, FP4_MIN, FP4_MAX)
+    indices = np.searchsorted(FP4_VALS, clipped)
+    indices = np.clip(indices, 1, len(FP4_VALS) - 1)
 
-    left_vals = fp4_vals[indices - 1]
-    right_vals = fp4_vals[indices]
+    left_vals = FP4_VALS[indices - 1]
+    right_vals = FP4_VALS[indices]
     left_dist = np.abs(clipped - left_vals)
     right_dist = np.abs(clipped - right_vals)
 
@@ -63,7 +65,7 @@ def fp4_row_quantize(tensor, stats_tracker=None, args=None):
     abs_max = np.maximum(np.abs(p_low), np.abs(p_high))
 
     # Avoid division by zero
-    scales = np.where(abs_max != 0, abs_max / 12.0, 1.0).flatten().astype(np.float16)
+    scales = np.where(abs_max != 0, abs_max / FP4_MAX, 1.0).flatten().astype(np.float16)
 
     # Normalize each row by its scale
     scales_for_division = scales.reshape(-1, 1)
@@ -80,7 +82,7 @@ def fp4_row_quantize(tensor, stats_tracker=None, args=None):
     original_flat = data.flatten()
     dequantized_flat = dequantized_data.flatten()
     cos_sim = np.dot(original_flat, dequantized_flat) / (np.linalg.norm(original_flat) * np.linalg.norm(dequantized_flat))
-    saturated_values = np.sum(np.abs(quantized_data) == 12)
+    saturated_values = np.sum(np.abs(quantized_data) == FP4_MAX)
     saturation_percent = (saturated_values / quantized_data.size) * 100
 
     if stats_tracker:
@@ -94,7 +96,61 @@ def fp4_row_quantize(tensor, stats_tracker=None, args=None):
             stats_tracker['saturation_warnings'] += 1
 
     return quantized_data, scales
-    
+
+
+def fp4_row_shift_quantize(tensor, stats_tracker=None, args=None):
+    # 1. vectorized scaling per row -> matrix of scaled rows, scales
+    if isinstance(tensor, torch.Tensor):
+        data = tensor.detach().cpu().numpy()
+    else:
+        data = np.array(tensor)
+
+    # Ensure 2D
+    shape = data.shape
+    if data.ndim == 1:
+        data = data.reshape(1, -1)
+
+    # Compute per-row scale factors using percentile-based clipping
+    dist = 0.1
+    p_low = np.percentile(data, dist, axis=1, keepdims=True)
+    p_high = np.percentile(data, 100 - dist, axis=1, keepdims=True)
+    dist = (p_high - p_low) / 2
+
+    # Avoid division by zero
+    scales = np.where(dist != 0, dist / FP4_MAX, 1.0).flatten().astype(np.float16)
+
+    # Normalize each row by its scale
+    scales_for_division = scales.reshape(-1, 1)
+    scaled = data / scales_for_division
+    scaled = scaled.reshape(shape)
+    shifts = scaled.mean(axis=1, keepdims=True).round().astype(np.int8)
+    assert np.all((shifts <= 19) & (shifts >= -20)), "Shifts out of remaining range for int8"
+    normalized = scaled - shifts
+
+    # 2. vectorized quantization to closest FP4 value -> return quantized data, scales
+    quantized_data = vectorized_closest_fp4(normalized)
+
+    dequantized_data = (quantized_data.astype(np.float32) + shifts) * scales_for_division
+    mse_error = np.mean((data - dequantized_data) ** 2)
+    snr_db = 10 * np.log10(np.var(data) / mse_error) if mse_error > 0 else float('inf')
+
+    original_flat = data.flatten()
+    dequantized_flat = dequantized_data.flatten()
+    cos_sim = np.dot(original_flat, dequantized_flat) / (np.linalg.norm(original_flat) * np.linalg.norm(dequantized_flat))
+    saturated_values = np.sum(np.abs(quantized_data) == FP4_MAX)
+    saturation_percent = (saturated_values / quantized_data.size) * 100
+
+    if stats_tracker:
+        stats_tracker['quantized_tensors'] += 1
+        stats_tracker['quantized_parameters'] += tensor.size
+        stats_tracker['mse_values'].append(mse_error)
+        stats_tracker['snr_values'].append(snr_db)
+        stats_tracker['cos_sim_values'].append(cos_sim)
+        saturation_warning_threshold = args.saturation_warning_threshold if args else 0.1
+        if saturation_percent > saturation_warning_threshold:
+            stats_tracker['saturation_warnings'] += 1
+
+    return quantized_data, shifts, scales
 
 def fp4_quantize(tensor, stats_tracker=None, args=None):
     mean_val = np.mean(tensor)
@@ -102,13 +158,12 @@ def fp4_quantize(tensor, stats_tracker=None, args=None):
     min_val = np.min(tensor)
     max_val = np.max(tensor)
 
-    qmin, qmax = -12, 12
-    standard_scale = (max_val - min_val) / (qmax - qmin) if max_val != min_val else 1.0
+    standard_scale = (max_val - min_val) / (FP4_MAX - FP4_MIN) if max_val != min_val else 1.0
     
-    standard_zero_point = qmax - max_val / standard_scale
-    standard_zero_point_clipped = np.clip(np.round(standard_zero_point), qmin, qmax)
-    test_quantized = np.clip(np.round(tensor / standard_scale + standard_zero_point_clipped), qmin, qmax)
-    test_saturation = np.sum(np.abs(test_quantized) >= 12) / tensor.size
+    standard_zero_point = FP4_MAX - max_val / standard_scale
+    standard_zero_point_clipped = np.clip(np.round(standard_zero_point), FP4_MIN, FP4_MAX)
+    test_quantized = np.clip(np.round(tensor / standard_scale + standard_zero_point_clipped), FP4_MIN, FP4_MAX)
+    test_saturation = np.sum(np.abs(test_quantized) >= FP4_MAX) / tensor.size
     
     saturation_threshold = args.saturation_threshold if args else 0.01
     if test_saturation > saturation_threshold:
@@ -137,7 +192,7 @@ def fp4_quantize(tensor, stats_tracker=None, args=None):
     p_low = np.percentile(tensor, dist)
     p_high = np.percentile(tensor, 100 - dist)
     abs_max = max(abs(p_low), abs(p_high))
-    scale = abs_max / 12 if abs_max != 0 else 1.0
+    scale = abs_max / FP4_MAX if abs_max != 0 else 1.0
     normalized = tensor / scale
 
     quantized_data = vectorized_closest_fp4(normalized)
@@ -163,7 +218,7 @@ def fp4_quantize(tensor, stats_tracker=None, args=None):
             stats_tracker['saturation_warnings'] += 1
     
     assert tensor.shape[1] % 2 == 0, "FP4 quantization requires even number of columns"
-    assert np.all(np.abs(tensor) <= 12), "Somehow got out of range numbers"
+    assert np.all(np.abs(tensor) <= FP4_MAX), "Somehow got out of range numbers"
     even_row_idxs = np.arange(0, tensor.shape[1], 2)
     odd_row_idxs = np.arange(1, tensor.shape[1], 2)
     even_data = quantized_data[:, even_row_idxs]
@@ -201,7 +256,7 @@ def save_tensor_with_header(tensor, output_path, precision='FP32', transpose=Fal
             # print(f"Skipping INT8 quantization for {filename}, using FP16 instead.")
             precision = 'FP16'
     if precision == 'FP4':
-        data, scale = fp4_row_quantize(original_data, stats_tracker=stats_tracker, args=args)
+        data, shifts, scale = fp4_row_shift_quantize(original_data, stats_tracker=stats_tracker, args=args)
     if precision == 'INT8':
         qmin, qmax = -128, 127
         standard_scale = (max_val - min_val) / (qmax - qmin) if max_val != min_val else 1.0
