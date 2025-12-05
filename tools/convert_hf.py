@@ -127,6 +127,16 @@ def fp4_row_shift_quantize(tensor, stats_tracker=None, args=None):
     assert np.all((shifts <= 19) & (shifts >= -20)), "Shifts out of remaining range for int8"
     normalized = scaled - shifts
 
+    # Track shift distribution
+    if stats_tracker is not None:
+        if 'shift_distribution' not in stats_tracker:
+            stats_tracker['shift_distribution'] = {}
+        shifts_flat = shifts.flatten()
+        unique_shifts, counts = np.unique(shifts_flat, return_counts=True)
+        for shift_val, count in zip(unique_shifts, counts):
+            shift_key = int(shift_val)
+            stats_tracker['shift_distribution'][shift_key] = stats_tracker['shift_distribution'].get(shift_key, 0) + count
+
     # 2. vectorized quantization to closest FP4 value -> return quantized data, scales
     quantized_data = vectorized_closest_fp4(normalized)
 
@@ -801,6 +811,20 @@ def convert_hf_model_weights(model, output_dir, precision='INT8', args=None):
         low_snr_fallbacks = quantization_stats.get('low_snr_fallbacks', 0)
         snr_threshold = args.snr_threshold if args else 30.0
         print(f"Processed {quantization_stats['quantized_tensors']} {precision} tensors, {fp16_tensors} FP16 tensors ({low_snr_fallbacks} SNR<{snr_threshold}dB fallbacks)")
+        if 'shift_distribution' in quantization_stats and quantization_stats['shift_distribution']:
+            shift_dist = quantization_stats['shift_distribution']
+            total_shifts = sum(shift_dist.values())
+            sorted_shifts = sorted(shift_dist.items())
+            print("\nShift Distribution (FP4 row-shift quantization):")
+            print(f"  Total rows: {total_shifts}")
+            print(f"  Unique shift values: {len(shift_dist)}")
+            print(f"  Shift range: [{min(shift_dist.keys())}, {max(shift_dist.keys())}]")
+            print(f"  Zero shifts: {shift_dist.get(0, 0)} ({100*shift_dist.get(0, 0)/total_shifts:.1f}%)")
+            print("  Distribution (shift: count, %):")
+            for shift_val, count in sorted_shifts:
+                pct = 100 * count / total_shifts
+                bar = '#' * int(pct / 2)
+                print(f"    {shift_val:3d}: {count:8d} ({pct:5.1f}%) {bar}")
 
     return model_config
 
