@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+from operator import neg
 import numpy as np
 import struct
 import sys
@@ -99,8 +100,37 @@ def get_q4_vals_for_matrix(original_data: np.ndarray, weights: Optional[np.ndarr
     quant_scales = [quantized_mse(s, centroids) for s in range(1, 127)]
     best_scale = np.argmin(quant_scales) + 1
     scaled_centroids = (centroids * best_scale).round().astype(np.int8)
-    scale = q_max_mag / best_scale
-    return scaled_centroids, scale
+    return scaled_centroids
+
+def get_nf4_vals_for_matrix(normalized_data: np.ndarray, n=16):
+    data = np.sort(normalized_data.flatten()).astype(np.float16)
+    length = len(data)
+
+    if length <= n:
+        return data.copy()
+
+    neg_data, pos_data = data[(data < 0) & (data > -1)], data[(data > 0) & (data < 1)]
+    assert len(neg_data) and len(pos_data), "Data must contain both negative and positive values for NF4."
+
+    neg_edges = np.linspace(0, len(neg_data), 7, dtype=float)
+    pos_edges = np.linspace(0, len(pos_data), 8, dtype=float)
+
+    neg_indices = ((neg_edges[:-1] + neg_edges[1:]) / 2).round().astype(int)
+    pos_indices = ((pos_edges[:-1] + pos_edges[1:]) / 2).round().astype(int)
+
+    neg_centroids = neg_data[neg_indices].copy() if len(neg_data) > 0 else np.array([], dtype=np.float16)
+    pos_centroids = pos_data[pos_indices].copy() if len(pos_data) > 0 else np.array([], dtype=np.float16)
+
+    # centroids = np.concatenate([neg_centroids, np.zeros(1), pos_centroids])
+    # centroids /= max(abs(centroids.min()), abs(centroids.max()))
+    centroids = [-1] + neg_centroids.tolist() + [0.0] + pos_centroids.tolist() + [1]
+    centroids = np.array(centroids, dtype=np.float16)
+
+    quant_scales = [quantized_mse(s, centroids) for s in range(1, 128)]
+    best_scale = np.argmin(quant_scales) + 1
+    nf4_vals = (centroids * best_scale).round().astype(np.int8)
+
+    return nf4_vals
 
 def test_dequantize_fp4_block(formatted_tensor, scale, q_vals=FP4_VALS):
     normalized = formatted_tensor / scale
@@ -135,6 +165,88 @@ def analytic_fp4_scale_minimization(formatted_tensor, base_scale, q_vals=FP4_VAL
 
     return scales.flatten().astype(np.float16)
 
+
+def joint_fp4_optimization(formatted_tensor, num_iterations=4, k=16):
+    """
+    Joint optimization of FP4 codebook and scales using block-coordinate descent.
+
+    Algorithm:
+        Init: Calculate scales S using 99.9th/0.1th percentile. Normalize weights W_norm = W/S.
+        Step A (Learn Codebook): Run Weighted K-Means on W_norm to get Codebook C.
+        Step B (Re-Optimize Scales): With C fixed, find optimal scale s_b = sum(w_i * q_i) / sum(q_i^2)
+        Step C (Re-Normalize): Update W_norm = W / S_new.
+        Loop: Repeat Steps A-C for num_iterations times.
+
+    Args:
+        formatted_tensor: Input tensor reshaped to (num_blocks, block_size)
+        num_iterations: Number of block-coordinate descent iterations (default: 4)
+        k: Number of codebook centroids (default: 16)
+
+    Returns:
+        tuple: (optimized_scales, optimized_codebook)
+    """
+    W = formatted_tensor.astype(np.float32)
+    num_blocks, block_size = W.shape
+
+    # # Init: Calculate scales using RMSNorm
+    # ms = np.mean(W ** 2, axis=1, keepdims=True)
+    # rms = np.sqrt(ms + 1e-8)
+    # scales = rms.flatten()
+    # Init: Calculate scales using percentile-based clipping (more outlier-robust than RMS)
+    dist = 0.1
+    p_low = np.percentile(W, dist, axis=1)
+    p_high = np.percentile(W, 100 - dist, axis=1)
+    p_max = np.maximum(np.abs(p_low), np.abs(p_high))
+    W = W.clip(-p_max.reshape(-1, 1), p_max.reshape(-1, 1))
+    scales = np.maximum(p_max, 1e-8)
+
+    codebook = None
+    best_int_scale = None
+
+    for iteration in range(num_iterations):
+        # Step C (or Init for first iteration): Normalize weights
+        W_norm = W / np.where(scales != 0, scales, 1.0).reshape(-1, 1)
+
+        # Step A: Learn Codebook via Weighted K-Means on normalized data
+        flat_norm = W_norm.flatten()
+        weights = np.repeat(scales, block_size)
+
+        kmeans = KMeans(n_clusters=k, n_init=1, max_iter=20, random_state=42)
+        kmeans.fit(flat_norm.reshape(-1, 1), sample_weight=weights)
+        centroids = kmeans.cluster_centers_.flatten()
+        centroids.sort()
+
+        # Normalize and quantize codebook to int8
+        q_max_mag = max(abs(centroids.min()), abs(centroids.max()))
+        centroids_normalized = centroids / q_max_mag
+
+        # Find best integer scale for codebook (only on first iteration for stability)
+        # if iteration == 0 or 1:
+        #     start = 1
+        #     quant_scales = [quantized_mse(s, centroids_normalized) for s in range(start, 128)]
+        #     best_int_scale = np.argmin(quant_scales) + start
+        best_int_scale = 127
+
+        codebook = (centroids_normalized * best_int_scale).round().astype(np.int8)
+
+        # Step B: Re-optimize scales with fixed codebook
+        # codebook = (centroids / q_max_mag) * best_int_scale
+        # So to map W_norm to codebook space: W_scaled = (W_norm / q_max_mag) * best_int_scale
+        norm_to_codebook = best_int_scale / q_max_mag
+        W_scaled = W_norm * norm_to_codebook
+        q_min, q_max = codebook.min(), codebook.max()
+        Q_int8 = vectorized_closest_fp4(W_scaled, q_min=q_min, q_max=q_max, q_vals=codebook).astype(np.float64)
+
+        # Compute optimal scale for direct int8 dequantization: W ≈ scale * Q_int8
+        # scale = (W · Q_int8) / (Q_int8 · Q_int8)
+        qq = np.sum(Q_int8 * Q_int8, axis=1)
+        wq = np.sum(W.astype(np.float64) * Q_int8, axis=1)
+        new_scales = np.divide(wq, qq, out=scales.copy(), where=qq > 0)
+        scales = np.where(new_scales > 0, new_scales, scales)
+
+    return scales.astype(np.float16), codebook
+
+
 def fp4_row_block_quantize(tensor, stats_tracker=None, args=None, block_size=16):
     # 1. vectorized scaling per row -> matrix of scaled rows, scales
     if isinstance(tensor, torch.Tensor):
@@ -161,24 +273,29 @@ def fp4_row_block_quantize(tensor, stats_tracker=None, args=None, block_size=16)
     abs_max = np.max(np.abs(formatted_data), axis=1, keepdims=True)
     std = formatted_data.std(axis=1, keepdims=True)
 
-    # Avoid division by zero
-    # scale = np.where(p_max != 0, p_max / FP4_MAX, 1.0).flatten().astype(np.float16)
+    q4_vals, q_max, q_min = FP4_VALS, FP4_MAX, FP4_MIN
+    scale = np.where(p_max != 0, p_max / q_max, 1.0).flatten().astype(np.float16)
     # scale = np.where(std != 0, std / FP4_BIN_MP_RMS, 1.0).flatten().astype(np.float16)
 
-    ms = np.mean(formatted_data ** 2, axis=1, keepdims=True)
-    rms = np.sqrt(ms)
-    # scale = rms
-    scale = abs_max
-    norm_data = formatted_data / np.where(scale != 0, scale, 1.0)
-    weights = np.ones_like(norm_data) * scale
-    q4_vals, q_scale = get_q4_vals_for_matrix(norm_data, weights=weights, k=16)
-    q_min = q4_vals.min()
-    q_max = q4_vals.max()
-    q_max_mag = max(abs(q_min), abs(q_max))
-    # scale *= q_scale
-    scale = np.where(p_max != 0, p_max / q_max_mag, 1.0).flatten().astype(np.float16)
+    # # attempting to use kmeans to find optimal q4 values
+    # # ms = np.mean(formatted_data ** 2, axis=1, keepdims=True)
+    # # rms = np.sqrt(ms)
+    # # scale = rms
+    # scale = p_max
+    # norm_data = formatted_data / np.where(scale != 0, scale, 1.0)
+    # # weights = np.ones_like(norm_data) * scale
+    # # q4_vals = get_q4_vals_for_matrix(norm_data, weights=weights, k=16)
+    # q4_vals = get_nf4_vals_for_matrix(norm_data)
+    # q_min, q_max = q4_vals.min(), q4_vals.max()
+    # q_max_mag = max(abs(q_min), abs(q_max))
+    # scale = np.where(p_max != 0, p_max / q_max_mag, 1.0).flatten().astype(np.float16)
+    
     scale = auto_select_fp4_scale(formatted_data, scale, q4_vals)
     scale = analytic_fp4_scale_minimization(formatted_data, scale, q4_vals)
+
+    # # Joint optimization of codebook and scales
+    # scale, q4_vals = joint_fp4_optimization(formatted_data, num_iterations=5, k=16)
+    # q_min, q_max = q4_vals.min(), q4_vals.max()
 
     # Normalize each row by its scale
     scales_for_division = scale.reshape(-1, 1)
@@ -187,10 +304,10 @@ def fp4_row_block_quantize(tensor, stats_tracker=None, args=None, block_size=16)
     # 2. vectorized quantization to closest FP4 value -> return quantized data, scales
     block_quantized_data = vectorized_closest_fp4(normalized, q_min=q_min, q_max=q_max, q_vals=q4_vals)
     quantized_data = block_quantized_data.reshape(padded_shape)[..., :shape[1]]
-    assert quantized_data.shape == shape
     scale = scale.reshape(padded_shape[0], -1)
+    assert quantized_data.shape == shape
 
-    dequantized_data = block_quantized_data.astype(np.float16) * scales_for_division
+    dequantized_data = block_quantized_data.astype(np.float32) * scales_for_division
     dequantized_data = dequantized_data.reshape(padded_shape)[..., :shape[1]]
 
     mse_error = np.mean((data.astype(np.float32) - dequantized_data.astype(np.float32)) ** 2)
