@@ -114,7 +114,7 @@ cli/cactus download Qwen/Qwen3-0.6B # HF name, stored to weights/Qwen3-0.6B
 | openai/whisper-medium | 646MB  | ✗ | ✗ | ✗ | ✓ | ✓ |
 | LiquidAI/LFM2-1.2B | 722MB  | ✓ | ✓ | ✗ | ✓ | ✗ |
 | LiquidAI/LFM2-1.2B-RAG | 722MB  | ✓ | ✓ | ✗ | ✓ | ✗ |
-| LiquidAI/LFM2-1.2B-Tools | 722MB  | ✓ | ✓ | ✗ | ✓ | ✗ |
+| LiquidAI/LFM2-1.2B-Tool | 722MB  | ✓ | ✓ | ✗ | ✓ | ✗ |
 | LiquidAI/LFM2-VL-1.6B | 1440MB  | ✓ | ✗ | ✓ | ✓ | ✗ |
 | Qwen/Qwen3-1.7B | 1161MB  | ✓ | ✓ | ✗ | ✓ | ✗ |
 | HuggingFaceTB/SmolLM2-1.7B-Instruct | 1161MB  | ✓ | ✗ | ✗ | ✓ | ✗ |
