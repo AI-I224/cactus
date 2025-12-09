@@ -11,6 +11,7 @@ DEFAULT_TRANSCRIBE_MODEL="openai/whisper-small"
 
 MODEL_NAME="$DEFAULT_MODEL"
 TRANSCRIBE_MODEL_NAME="$DEFAULT_TRANSCRIBE_MODEL"
+IOS_MODE=false
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -22,12 +23,17 @@ while [[ $# -gt 0 ]]; do
             TRANSCRIBE_MODEL_NAME="$2"
             shift 2
             ;;
+        --ios)
+            IOS_MODE=true
+            shift
+            ;;
         --help|-h)
             echo "Usage: $0 [OPTIONS]"
             echo ""
             echo "Options:"
             echo "  --model <name>            Model to use for tests (default: $DEFAULT_MODEL)"
             echo "  --transcribe_model <name> Transcribe model to use (default: $DEFAULT_TRANSCRIBE_MODEL)"
+            echo "  --ios                     Run tests on iOS device or simulator"
             echo "  --help, -h                Show this help message"
             exit 0
             ;;
@@ -56,6 +62,10 @@ if ! "$PROJECT_ROOT/cli/cactus" download "$TRANSCRIBE_MODEL_NAME"; then
 fi
 
 echo ""
+if [ "$IOS_MODE" = true ]; then
+    exec "$SCRIPT_DIR/ios/run.sh" "$MODEL_NAME" "$TRANSCRIBE_MODEL_NAME"
+fi
+
 echo "Step 2: Building Cactus library..."
 cd "$PROJECT_ROOT"
 if ! cactus/build.sh; then
