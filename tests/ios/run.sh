@@ -306,8 +306,6 @@ if [ "$DEVICE_TYPE" = "simulator" ]; then
 else
     echo "Installing on: $DEVICE_NAME"
 
-    xcrun devicectl device uninstall app --device "$DEVICE_UUID" "$BUNDLE_ID" || true
-
     if ! xcrun devicectl device install app --device "$DEVICE_UUID" "$APP_PATH"; then
         echo ""
         echo "Error: Failed to install app on device"
