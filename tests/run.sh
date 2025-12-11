@@ -11,6 +11,7 @@ DEFAULT_TRANSCRIBE_MODEL="openai/whisper-small"
 
 MODEL_NAME="$DEFAULT_MODEL"
 TRANSCRIBE_MODEL_NAME="$DEFAULT_TRANSCRIBE_MODEL"
+ANDROID_MODE=false
 IOS_MODE=false
 
 while [[ $# -gt 0 ]]; do
@@ -23,6 +24,10 @@ while [[ $# -gt 0 ]]; do
             TRANSCRIBE_MODEL_NAME="$2"
             shift 2
             ;;
+        --android)
+            ANDROID_MODE=true
+            shift
+            ;;
         --ios)
             IOS_MODE=true
             shift
@@ -33,6 +38,7 @@ while [[ $# -gt 0 ]]; do
             echo "Options:"
             echo "  --model <name>            Model to use for tests (default: $DEFAULT_MODEL)"
             echo "  --transcribe_model <name> Transcribe model to use (default: $DEFAULT_TRANSCRIBE_MODEL)"
+            echo "  --android                 Run tests on Android device or emulator via adb"
             echo "  --ios                     Run tests on iOS device or simulator"
             echo "  --help, -h                Show this help message"
             exit 0
@@ -62,6 +68,10 @@ if ! "$PROJECT_ROOT/cli/cactus" download "$TRANSCRIBE_MODEL_NAME"; then
 fi
 
 echo ""
+if [ "$ANDROID_MODE" = true ]; then
+    exec "$SCRIPT_DIR/android/run.sh" "$MODEL_NAME" "$TRANSCRIBE_MODEL_NAME"
+fi
+
 if [ "$IOS_MODE" = true ]; then
     exec "$SCRIPT_DIR/ios/run.sh" "$MODEL_NAME" "$TRANSCRIBE_MODEL_NAME"
 fi
