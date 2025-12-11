@@ -2,174 +2,279 @@
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-TESTS_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 MODEL_NAME="$1"
 TRANSCRIBE_MODEL_NAME="$2"
 
-if ! command -v adb &> /dev/null; then
-    echo ""
-    echo "Error: adb not found"
-    echo "Install Android SDK Platform Tools or set up your PATH"
+echo "Running Cactus tests on Android..."
+echo "===================================="
+echo ""
+
+if ! command -v adb; then
+    echo "adb not found"
+    echo "Install Android SDK Platform Tools and ensure it's in your PATH"
+    echo "Installation:"
+    echo "  - Via Android Studio: Settings > Android SDK > SDK Tools > Android SDK Platform-Tools"
     exit 1
 fi
 
 echo ""
-echo "Step 2: Selecting Android device..."
+echo "Step 1: Selecting Android device..."
 
-adb start-server > /dev/null 2>&1
+adb start-server
 
+connected_devices=$(adb devices | grep -E "device$|emulator" | grep -v "^List" | awk '{print $1}')
 
-DEVICES=$(adb devices | grep -E "device$|emulator" | grep -v "^List" | awk '{print $1}')
-
-if [ -z "$DEVICES" ]; then
-    echo ""
-    echo "Error: No Android devices or emulators found"
-    echo ""
-    echo "Start an emulator: emulator -avd <avd_name>"
-    echo "Or connect a physical device with USB debugging enabled"
-    exit 1
-fi
-
-DEVICE_COUNT=$(echo "$DEVICES" | wc -l | tr -d ' ')
-
-if [ "$DEVICE_COUNT" -eq 1 ]; then
-    DEVICE_ID=$(echo "$DEVICES" | head -1)
-    echo "Using device: $DEVICE_ID"
+if command -v emulator; then
+    available_emulators=$(emulator -list-avds | grep -v "^INFO" || true)
 else
-    echo "Available devices:"
-    DEVICE_NUM=0
-    while read -r device; do
-        DEVICE_NUM=$((DEVICE_NUM + 1))
-        DEVICE_MODEL=$(adb -s "$device" shell getprop ro.product.model 2>/dev/null | tr -d '\r')
-        DEVICE_ANDROID=$(adb -s "$device" shell getprop ro.build.version.release 2>/dev/null | tr -d '\r')
-        if [ -n "$DEVICE_MODEL" ]; then
-            printf "  %2d) %s - %s (Android %s)\n" "$DEVICE_NUM" "$device" "$DEVICE_MODEL" "$DEVICE_ANDROID"
-        else
-            printf "  %2d) %s\n" "$DEVICE_NUM" "$device"
-        fi
-    done <<< "$DEVICES"
-
-    echo ""
-    read -p "Select device number (1-$DEVICE_COUNT): " DEVICE_NUMBER
-
-    if ! [[ "$DEVICE_NUMBER" =~ ^[0-9]+$ ]] || [ "$DEVICE_NUMBER" -lt 1 ] || [ "$DEVICE_NUMBER" -gt "$DEVICE_COUNT" ]; then
-        echo ""
-        echo "Invalid selection"
-        exit 1
-    fi
-
-    DEVICE_ID=$(echo "$DEVICES" | sed -n "${DEVICE_NUMBER}p")
-    echo ""
-    echo "Selected: $DEVICE_ID"
+    available_emulators=""
 fi
 
-if ! adb -s "$DEVICE_ID" shell echo "test" > /dev/null 2>&1; then
+all_devices=""
+
+if [ -n "$connected_devices" ]; then
+    while read -r device_id; do
+        if [[ "$device_id" == emulator-* ]]; then
+            device_model=$(adb -s "$device_id" shell getprop ro.product.model | tr -d '\r')
+            device_android=$(adb -s "$device_id" shell getprop ro.build.version.release | tr -d '\r')
+            avd_name=$(adb -s "$device_id" shell getprop ro.kernel.qemu.avd_name | tr -d '\r')
+            if [ -n "$avd_name" ]; then
+                all_devices=$(printf "%s\n%s|emulator|%s|running|%s|%s" "$all_devices" "$avd_name" "$device_id" "$device_model" "$device_android")
+            else
+                all_devices=$(printf "%s\n%s|emulator|%s|running|%s|%s" "$all_devices" "$device_id" "$device_id" "$device_model" "$device_android")
+            fi
+        else
+            device_model=$(adb -s "$device_id" shell getprop ro.product.model | tr -d '\r')
+            device_android=$(adb -s "$device_id" shell getprop ro.build.version.release | tr -d '\r')
+            all_devices=$(printf "%s\n%s|device|%s|running|%s|%s" "$all_devices" "$device_model" "$device_id" "$device_model" "$device_android")
+        fi
+    done <<< "$connected_devices"
+fi
+
+if [ -n "$available_emulators" ]; then
+    while read -r avd_name; do
+        if ! echo "$all_devices" | grep -q "^$avd_name|emulator|"; then
+            all_devices=$(printf "%s\n%s|emulator||offline||" "$all_devices" "$avd_name")
+        fi
+    done <<< "$available_emulators"
+fi
+
+all_devices=$(echo "$all_devices" | grep -v '^$')
+
+if [ -z "$all_devices" ]; then
+    echo "No devices or emulators found"
+    echo "To use an emulator:"
+    echo "  - Create one through Android Studio AVD Manager"
+    echo "  - Or start one with: emulator -avd <avd_name>"
+    echo "To use a physical device:"
+    echo "  - Connect via USB"
+    echo "  - Enable USB debugging in Developer Options"
+    echo "  - Authorize the computer when prompted"
+    exit 1
+fi
+
+physical_count=$(echo "$all_devices" | grep -c '|device|' || true)
+device_num=0
+
+if [ "$physical_count" -gt 0 ]; then
+    echo "Devices:"
+    while IFS='|' read -r name type device_id status model android_version; do
+        if [ "$type" = "device" ]; then
+            device_num=$((device_num + 1))
+            if [ -n "$android_version" ]; then
+                printf "  %2d) %s (Android %s)\n" "$device_num" "$name" "$android_version"
+            else
+                printf "  %2d) %s\n" "$device_num" "$name"
+            fi
+        fi
+    done <<< "$all_devices"
     echo ""
-    echo "Error: Device not responding"
+fi
+
+echo "Emulators:"
+while IFS='|' read -r name type device_id status model android_version; do
+    if [ "$type" = "emulator" ]; then
+        device_num=$((device_num + 1))
+        if [ "$status" = "offline" ]; then
+            printf "  %2d) %s [not running]\n" "$device_num" "$name"
+        else
+            if [ -n "$android_version" ]; then
+                printf "  %2d) %s (Android %s)\n" "$device_num" "$name" "$android_version"
+            else
+                printf "  %2d) %s\n" "$device_num" "$name"
+            fi
+        fi
+    fi
+done <<< "$all_devices"
+
+echo ""
+read -p "Select device number (1-$device_num): " device_number
+
+if ! [[ "$device_number" =~ ^[0-9]+$ ]] || [ "$device_number" -lt 1 ] || [ "$device_number" -gt "$device_num" ]; then
+    echo "Invalid selection"
+    exit 1
+fi
+
+selected_line=$(echo "$all_devices" | sed -n "${device_number}p")
+device_name=$(echo "$selected_line" | cut -d'|' -f1)
+device_type=$(echo "$selected_line" | cut -d'|' -f2)
+DEVICE_ID=$(echo "$selected_line" | cut -d'|' -f3)
+device_status=$(echo "$selected_line" | cut -d'|' -f4)
+
+if [ -z "$device_name" ]; then
+    echo "Could not parse device information"
     exit 1
 fi
 
 echo ""
-echo "Step 3: Building Cactus library for Android..."
+if [ "$device_type" = "emulator" ]; then
+    if [ "$device_status" = "offline" ]; then
+        echo "Selected: $device_name (Emulator - Not Running)"
+        echo "Starting emulator..."
+
+        if ! command -v emulator; then
+            echo "Emulator command not found"
+            echo "Add Android SDK emulator to your PATH"
+            echo "Location: \$ANDROID_HOME/emulator or \$ANDROID_SDK_ROOT/emulator"
+            exit 1
+        fi
+
+        emulator -avd "$device_name" -no-snapshot-load &
+        emulator_pid=$!
+
+        echo "Waiting for emulator to boot..."
+        timeout=300
+        elapsed=0
+        while [ $elapsed -lt $timeout ]; do
+            sleep 2
+            elapsed=$((elapsed + 2))
+
+            DEVICE_ID=$(adb devices | grep emulator | head -1 | awk '{print $1}')
+
+            if [ -n "$DEVICE_ID" ]; then
+                boot_complete=$(adb -s "$DEVICE_ID" shell getprop sys.boot_completed | tr -d '\r')
+                if [ "$boot_complete" = "1" ]; then
+                    echo "Emulator started successfully"
+                    break
+                fi
+            fi
+        done
+
+        if [ -z "$DEVICE_ID" ] || [ "$boot_complete" != "1" ]; then
+            echo "Failed to start emulator (timeout)"
+            exit 1
+        fi
+    else
+        echo "Selected: $device_name (Emulator)"
+    fi
+else
+    echo "Selected: $device_name (Device)"
+fi
+
+if ! adb -s "$DEVICE_ID" shell echo "test"; then
+    echo "Device not responding"
+    echo "Ensure the device is connected and USB debugging is authorized"
+    exit 1
+fi
+
+echo ""
+echo "Step 2: Building Cactus library for Android..."
 
 if ! "$PROJECT_ROOT/android/build.sh"; then
-    echo ""
-    echo "Error: Failed to build Cactus library"
+    echo "Failed to build Cactus library"
     exit 1
 fi
 
 echo ""
-echo "Step 4: Building Android tests..."
+echo "Step 3: Building Android tests..."
 
-ANDROID_TEST_DIR="$SCRIPT_DIR"
-ANDROID_BUILD_DIR="$ANDROID_TEST_DIR/build"
-
+android_test_dir="$SCRIPT_DIR"
+android_build_dir="$android_test_dir/build"
 
 if [ -z "$ANDROID_NDK_HOME" ]; then
     if [ -n "$ANDROID_HOME" ]; then
-        ANDROID_NDK_HOME=$(ls -d "$ANDROID_HOME/ndk/"* 2>/dev/null | sort -V | tail -1)
+        ANDROID_NDK_HOME=$(ls -d "$ANDROID_HOME/ndk/"* | sort -V | tail -1)
     elif [ -d "$HOME/Library/Android/sdk" ]; then
-        ANDROID_NDK_HOME=$(ls -d "$HOME/Library/Android/sdk/ndk/"* 2>/dev/null | sort -V | tail -1)
+        ANDROID_NDK_HOME=$(ls -d "$HOME/Library/Android/sdk/ndk/"* | sort -V | tail -1)
     fi
 fi
 
 if [ -z "$ANDROID_NDK_HOME" ] || [ ! -d "$ANDROID_NDK_HOME" ]; then
-    echo ""
-    echo "Error: Android NDK not found"
+    echo "Android NDK not found"
+    echo "Install the NDK through Android Studio: Settings > Android SDK > SDK Tools > NDK"
     exit 1
 fi
 
-CMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake"
-ANDROID_PLATFORM=${ANDROID_PLATFORM:-android-21}
-ANDROID_ABI="arm64-v8a"
+cmake_toolchain_file="$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake"
+android_platform=${ANDROID_PLATFORM:-android-21}
+android_abi="arm64-v8a"
 
-rm -rf "$ANDROID_BUILD_DIR"
-mkdir -p "$ANDROID_BUILD_DIR"
+rm -rf "$android_build_dir"
+mkdir -p "$android_build_dir"
 
-if ! cmake -S "$ANDROID_TEST_DIR" -B "$ANDROID_BUILD_DIR" \
-    -DCMAKE_TOOLCHAIN_FILE="$CMAKE_TOOLCHAIN_FILE" \
-    -DANDROID_ABI="$ANDROID_ABI" \
-    -DANDROID_PLATFORM="$ANDROID_PLATFORM" \
-    -DCMAKE_BUILD_TYPE=Release; then
-    echo ""
-    echo "Error: Failed to configure tests"
+if ! cmake -S "$android_test_dir" -B "$android_build_dir" \
+    -DCMAKE_TOOLCHAIN_FILE="$cmake_toolchain_file" \
+    -DANDROID_ABI="$android_abi" \
+    -DANDROID_PLATFORM="$android_platform" \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_RULE_MESSAGES=OFF \
+    -DCMAKE_VERBOSE_MAKEFILE=OFF; then
+    echo "Failed to configure tests"
     exit 1
 fi
 
-n_cpu=$(nproc 2>/dev/null || sysctl -n hw.logicalcpu 2>/dev/null || echo 4)
-if ! cmake --build "$ANDROID_BUILD_DIR" -j "$n_cpu"; then
-    echo ""
-    echo "Error: Failed to build tests"
+n_jobs=$(nproc || sysctl -n hw.logicalcpu || echo 4)
+if ! cmake --build "$android_build_dir" -j "$n_jobs"; then
+    echo "Failed to build tests"
     exit 1
 fi
 
-TEST_EXECUTABLES=($(find "$ANDROID_BUILD_DIR" -maxdepth 1 -name "test_*" -type f | sort))
+echo "Discovering test executables..."
+test_executables=($(find "$android_build_dir" -maxdepth 1 -name "test_*" -type f | sort))
 
-if [ ${#TEST_EXECUTABLES[@]} -eq 0 ]; then
-    echo ""
-    echo "Error: No test executables found"
+if [ ${#test_executables[@]} -eq 0 ]; then
+    echo "No test executables found"
     exit 1
 fi
 
-MODEL_DIR=$(echo "$MODEL_NAME" | sed 's|.*/||' | tr '[:upper:]' '[:lower:]')
-TRANSCRIBE_MODEL_DIR=$(echo "$TRANSCRIBE_MODEL_NAME" | sed 's|.*/||' | tr '[:upper:]' '[:lower:]')
-MODEL_SRC="$PROJECT_ROOT/weights/$MODEL_DIR"
-TRANSCRIBE_MODEL_SRC="$PROJECT_ROOT/weights/$TRANSCRIBE_MODEL_DIR"
-
-DEVICE_TEST_DIR="/data/local/tmp/cactus_tests"
-DEVICE_MODEL_DIR="/data/local/tmp/cactus_models"
+echo "Found ${#test_executables[@]} test executable(s)"
 
 echo ""
-echo "Step 5: Deploying to device..."
+echo "Step 4: Deploying to device..."
 
-adb -s "$DEVICE_ID" shell "mkdir -p $DEVICE_TEST_DIR $DEVICE_MODEL_DIR"
+model_dir=$(echo "$MODEL_NAME" | sed 's|.*/||' | tr '[:upper:]' '[:lower:]')
+transcribe_model_dir=$(echo "$TRANSCRIBE_MODEL_NAME" | sed 's|.*/||' | tr '[:upper:]' '[:lower:]')
+model_src="$PROJECT_ROOT/weights/$model_dir"
+transcribe_model_src="$PROJECT_ROOT/weights/$transcribe_model_dir"
+
+device_test_dir="/data/local/tmp/cactus_tests"
+device_model_dir="/data/local/tmp/cactus_models"
+
+adb -s "$DEVICE_ID" shell "mkdir -p $device_test_dir $device_model_dir"
 
 echo "Pushing model weights..."
-adb -s "$DEVICE_ID" push "$MODEL_SRC" "$DEVICE_MODEL_DIR/"
-adb -s "$DEVICE_ID" push "$TRANSCRIBE_MODEL_SRC" "$DEVICE_MODEL_DIR/"
+adb -s "$DEVICE_ID" push "$model_src" "$device_model_dir/"
+adb -s "$DEVICE_ID" push "$transcribe_model_src" "$device_model_dir/"
 
-echo ""
 echo "Pushing test executables..."
-for test_exe in "${TEST_EXECUTABLES[@]}"; do
+for test_exe in "${test_executables[@]}"; do
     test_name=$(basename "$test_exe")
-    adb -s "$DEVICE_ID" push "$test_exe" "$DEVICE_TEST_DIR/"
-    adb -s "$DEVICE_ID" shell "chmod +x $DEVICE_TEST_DIR/$test_name"
+    adb -s "$DEVICE_ID" push "$test_exe" "$device_test_dir/"
+    adb -s "$DEVICE_ID" shell "chmod +x $device_test_dir/$test_name"
 done
 
 echo ""
-echo "Step 6: Running tests..."
+echo "Step 5: Running tests..."
 echo "------------------------"
 
-for test_exe in "${TEST_EXECUTABLES[@]}"; do
+for test_exe in "${test_executables[@]}"; do
     test_name=$(basename "$test_exe")
-    echo ""
-    echo "Running $test_name..."
 
-    adb -s "$DEVICE_ID" shell "cd /data/local/tmp && \
-        export CACTUS_TEST_MODEL=$DEVICE_MODEL_DIR/$MODEL_DIR && \
-        export CACTUS_TEST_TRANSCRIBE_MODEL=$DEVICE_MODEL_DIR/$TRANSCRIBE_MODEL_DIR && \
-        $DEVICE_TEST_DIR/$test_name"
+    adb -s "$DEVICE_ID" shell "cd $device_test_dir && \
+        export CACTUS_TEST_MODEL=$device_model_dir/$model_dir && \
+        export CACTUS_TEST_TRANSCRIBE_MODEL=$device_model_dir/$transcribe_model_dir && \
+        ./$test_name"
 done
 
 echo ""

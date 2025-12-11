@@ -1,46 +1,42 @@
 #!/bin/bash
 
-# iOS test runner script
-# Called from tests/run.sh with --ios flag
-# Handles: device selection, Xcode project configuration, app build, and test execution
-
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
-# Model names passed from parent run.sh
 MODEL_NAME="$1"
 TRANSCRIBE_MODEL_NAME="$2"
 
-# Validate Xcode installation
+echo "Running Cactus tests on iOS..."
+echo "==============================="
+echo ""
+
 if [ ! -d "/Applications/Xcode.app" ]; then
-    echo ""
-    echo "Error: Xcode not installed"
+    echo "Xcode not installed"
+    echo "Install Xcode from the Mac App Store"
     exit 1
 fi
 
 if ! xcode-select -p; then
-    echo ""
-    echo "Error: Xcode Command Line Tools not installed"
+    echo "Xcode Command Line Tools not installed"
+    echo "Install with: xcode-select --install"
     exit 1
 fi
 
 if ! /usr/bin/xcrun --version; then
-    echo ""
-    echo "Error: Xcode license not accepted"
+    echo "Xcode license not accepted"
+    echo "Accept the license with: sudo xcodebuild -license accept"
     exit 1
 fi
 
 if ! command -v xcodebuild; then
-    echo ""
-    echo "Error: xcodebuild not found"
+    echo "xcodebuild not found"
     exit 1
 fi
 
 echo ""
-echo "Step 2: Selecting iOS device..."
+echo "Step 1: Selecting iOS device..."
 
-# Collect available simulators
-SIMULATORS=$(xcrun simctl list devices available | grep -E "^\s+(iPhone|iPad)" | grep -v "unavailable" | sed 's/^[[:space:]]*//' | while read line; do
+simulators=$(xcrun simctl list devices available | grep -E "^\s+(iPhone|iPad)" | grep -v "unavailable" | sed 's/^[[:space:]]*//' | while read line; do
     uuid=$(echo "$line" | grep -oE '\([A-F0-9-]{36}\)' | head -1 | tr -d '()')
     if [ -n "$uuid" ]; then
         name=$(echo "$line" | sed -E 's/ \([^)]*\)//g' | xargs)
@@ -48,10 +44,9 @@ SIMULATORS=$(xcrun simctl list devices available | grep -E "^\s+(iPhone|iPad)" |
     fi
 done)
 
-# Collect physical devices (UUID pattern: 00008XXX-XXXXXXXXXXXXXXXX)
-XCTRACE_OUTPUT=$(xcrun xctrace list devices 2>&1)
+xctrace_output=$(xcrun xctrace list devices 2>&1)
 
-PHYSICAL_DEVICES=$(echo "$XCTRACE_OUTPUT" | awk '
+physical_devices=$(echo "$xctrace_output" | awk '
     /== Devices ==/ { in_online=1; in_offline=0; next }
     /== Devices Offline ==/ { in_online=0; in_offline=1; next }
     /== Simulators ==/ { exit }
@@ -71,293 +66,275 @@ PHYSICAL_DEVICES=$(echo "$XCTRACE_OUTPUT" | awk '
     fi
 done)
 
-# Combine devices (physical first, then simulators)
-ALL_DEVICES=$(printf "%s\n%s\n" "$PHYSICAL_DEVICES" "$SIMULATORS" | grep -v '^$')
+all_devices=$(printf "%s\n%s\n" "$physical_devices" "$simulators" | grep -v '^$')
 
-if [ -z "$ALL_DEVICES" ]; then
-    echo ""
-    echo "Error: No devices or simulators found"
-    echo "Install iOS simulators through Xcode or connect a physical device"
+if [ -z "$all_devices" ]; then
+    echo "No devices or simulators found"
+    echo "To use a simulator:"
+    echo "  - Install iOS simulators through Xcode"
+    echo "To use a physical device:"
+    echo "  - Connect via USB or network"
+    echo "  - Enable Developer Mode in Settings"
     exit 1
 fi
 
-# Display devices for selection
-PHYSICAL_COUNT=$(echo "$ALL_DEVICES" | grep -c '|device|')
-DEVICE_NUM=0
+physical_count=$(echo "$all_devices" | grep -c '|device|' || true)
+device_num=0
 
-if [ "$PHYSICAL_COUNT" -gt 0 ]; then
+if [ "$physical_count" -gt 0 ]; then
     echo "Devices:"
     while IFS='|' read -r name type uuid status; do
         if [ "$type" = "device" ]; then
-            DEVICE_NUM=$((DEVICE_NUM + 1))
+            device_num=$((device_num + 1))
             if [ "$status" = "offline" ]; then
-                printf "  %2d) %s [offline]\n" "$DEVICE_NUM" "$name"
+                printf "  %2d) %s [offline]\n" "$device_num" "$name"
             else
-                printf "  %2d) %s\n" "$DEVICE_NUM" "$name"
+                printf "  %2d) %s\n" "$device_num" "$name"
             fi
         fi
-    done <<< "$ALL_DEVICES"
+    done <<< "$all_devices"
     echo ""
 fi
 
 echo "Simulators:"
 while IFS='|' read -r name type uuid status; do
     if [ "$type" = "simulator" ]; then
-        DEVICE_NUM=$((DEVICE_NUM + 1))
-        printf "  %2d) %s\n" "$DEVICE_NUM" "$name"
+        device_num=$((device_num + 1))
+        printf "  %2d) %s\n" "$device_num" "$name"
     fi
-done <<< "$ALL_DEVICES"
+done <<< "$all_devices"
 
 echo ""
-read -p "Select device number (1-$DEVICE_NUM): " DEVICE_NUMBER
+read -p "Select device number (1-$device_num): " device_number
 
-if ! [[ "$DEVICE_NUMBER" =~ ^[0-9]+$ ]] || [ "$DEVICE_NUMBER" -lt 1 ] || [ "$DEVICE_NUMBER" -gt "$DEVICE_NUM" ]; then
-    echo ""
-    echo "Invalid selection. Please enter a number between 1 and $DEVICE_NUM"
+if ! [[ "$device_number" =~ ^[0-9]+$ ]] || [ "$device_number" -lt 1 ] || [ "$device_number" -gt "$device_num" ]; then
+    echo "Invalid selection"
     exit 1
 fi
 
-# Parse selected device
-SELECTED_LINE=$(echo "$ALL_DEVICES" | sed -n "${DEVICE_NUMBER}p")
-DEVICE_NAME=$(echo "$SELECTED_LINE" | cut -d'|' -f1)
-DEVICE_TYPE=$(echo "$SELECTED_LINE" | cut -d'|' -f2)
-DEVICE_UUID=$(echo "$SELECTED_LINE" | cut -d'|' -f3)
-DEVICE_STATUS=$(echo "$SELECTED_LINE" | cut -d'|' -f4)
+selected_line=$(echo "$all_devices" | sed -n "${device_number}p")
+device_name=$(echo "$selected_line" | cut -d'|' -f1)
+device_type=$(echo "$selected_line" | cut -d'|' -f2)
+device_uuid=$(echo "$selected_line" | cut -d'|' -f3)
+device_status=$(echo "$selected_line" | cut -d'|' -f4)
 
-if [ -z "$DEVICE_UUID" ]; then
-    echo ""
-    echo "Error: Could not parse device information"
+if [ -z "$device_uuid" ]; then
+    echo "Could not parse device information"
     exit 1
 fi
 
 echo ""
-if [ "$DEVICE_TYPE" = "simulator" ]; then
-    echo "Selected: $DEVICE_NAME (Simulator)"
+if [ "$device_type" = "simulator" ]; then
+    echo "Selected: $device_name (Simulator)"
 else
-    if [ "$DEVICE_STATUS" = "offline" ]; then
-        echo "Selected: $DEVICE_NAME (Device - Offline)"
-        echo ""
+    if [ "$device_status" = "offline" ]; then
+        echo "Selected: $device_name (Device - Offline)"
         echo "Warning: This device is currently offline"
-        echo "   Please ensure the device is:"
-        echo "   - Connected via USB or network"
-        echo "   - Unlocked and trusted"
-        echo "   - Has developer mode enabled"
+        echo "Ensure the device is:"
+        echo "  - Connected via USB or network"
+        echo "  - Unlocked and trusted"
+        echo "  - Has Developer Mode enabled"
         echo ""
-        read -p "Continue anyway? (y/N): " CONTINUE
-        if [[ ! "$CONTINUE" =~ ^[Yy]$ ]]; then
-            echo "Aborted."
+        read -p "Continue anyway? (y/N): " continue_choice
+        if [[ ! "$continue_choice" =~ ^[Yy]$ ]]; then
+            echo "Aborted"
             exit 0
         fi
     else
-        echo "Selected: $DEVICE_NAME (Device)"
+        echo "Selected: $device_name (Device)"
     fi
-fi
 
-# Verify certificates exist for physical devices
-if [ "$DEVICE_TYPE" = "device" ] && ! security find-identity -v -p codesigning | grep -q "Apple Development"; then
-    echo ""
-    echo "Error: No development certificates found"
-    echo ""
-    echo "To fix this:"
-    echo "  1. Open Xcode"
-    echo "  2. Go to Settings > Accounts"
-    echo "  3. Add your Apple ID"
-    echo "  4. Download development certificates"
-    exit 1
+    if ! security find-identity -v -p codesigning | grep -q "Apple Development"; then
+        echo "No development certificates found"
+        echo "To fix this:"
+        echo "  1. Open Xcode > Settings > Accounts"
+        echo "  2. Add your Apple ID"
+        echo "  3. Download development certificates"
+        exit 1
+    fi
 fi
 
 echo ""
-echo "Step 3: Configuring Xcode project..."
+echo "Step 2: Configuring Xcode project..."
 
-XCODEPROJ_PATH="$SCRIPT_DIR/CactusTest/CactusTest.xcodeproj"
-TESTS_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-CACTUS_ROOT="$PROJECT_ROOT/cactus"
+xcodeproj_path="$SCRIPT_DIR/CactusTest/CactusTest.xcodeproj"
+tests_root="$(cd "$SCRIPT_DIR/.." && pwd)"
+cactus_root="$PROJECT_ROOT/cactus"
 
-# Configure bundle ID and team for physical devices
-BUNDLE_ID="com.cactus.test.${USER}"
-echo "Using Bundle ID: $BUNDLE_ID"
+bundle_id="com.cactus.test.${USER}"
+echo "Using Bundle ID: $bundle_id"
 
-
-if [ "$DEVICE_TYPE" = "device" ]; then
-    DEVELOPMENT_TEAM=$(security find-certificate -a -c "Apple Development" -p | openssl x509 -noout -subject | grep -oE 'OU=[A-Z0-9]{10}' | head -1 | cut -d= -f2)
-    if [ -z "$DEVELOPMENT_TEAM" ]; then
-        echo ""
-        echo "Error: Could not extract Team ID from certificate"
+if [ "$device_type" = "device" ]; then
+    development_team=$(security find-certificate -a -c "Apple Development" -p | openssl x509 -noout -subject | grep -oE 'OU=[A-Z0-9]{10}' | head -1 | cut -d= -f2)
+    if [ -z "$development_team" ]; then
+        echo "Could not extract Team ID from certificate"
         exit 1
     fi
-    echo "Using Team ID: $DEVELOPMENT_TEAM"
+    echo "Using Team ID: $development_team"
 fi
 
 if ! command -v ruby; then
-    echo ""
-    echo "Error: Ruby not found. Please install Ruby."
+    echo "Ruby not found"
     exit 1
 fi
 
 if ! gem list xcodeproj -i; then
-    echo "   Installing xcodeproj gem..."
+    echo "Installing xcodeproj gem..."
     if ! gem install xcodeproj; then
-        echo ""
-        echo "Error: Failed to install xcodeproj gem"
+        echo "Failed to install xcodeproj gem"
         exit 1
     fi
 fi
 
-export PROJECT_ROOT TESTS_ROOT CACTUS_ROOT XCODEPROJ_PATH BUNDLE_ID DEVELOPMENT_TEAM
+export PROJECT_ROOT TESTS_ROOT="$tests_root" CACTUS_ROOT="$cactus_root" XCODEPROJ_PATH="$xcodeproj_path" BUNDLE_ID="$bundle_id" DEVELOPMENT_TEAM="$development_team"
 if ! ruby "$SCRIPT_DIR/setup_project.rb"; then
-    echo ""
-    echo "Error: Failed to setup Xcode project"
+    echo "Failed to configure Xcode project"
     exit 1
 fi
 
 echo ""
-echo "Step 4: Building iOS test application..."
+echo "Step 3: Building iOS test application..."
 
-if [ "$DEVICE_TYPE" = "simulator" ]; then
-    IOS_SIM_SDK_PATH=$(xcrun --sdk iphonesimulator --show-sdk-path)
-    if [ -z "$IOS_SIM_SDK_PATH" ] || [ ! -d "$IOS_SIM_SDK_PATH" ]; then
-        echo ""
-        echo "Error: iOS Simulator SDK not found"
+if [ "$device_type" = "simulator" ]; then
+    ios_sim_sdk_path=$(xcrun --sdk iphonesimulator --show-sdk-path)
+    if [ -z "$ios_sim_sdk_path" ] || [ ! -d "$ios_sim_sdk_path" ]; then
+        echo "iOS Simulator SDK not found"
         exit 1
     fi
 
-    if ! xcodebuild -project "$XCODEPROJ_PATH" \
+    if ! xcodebuild -project "$xcodeproj_path" \
          -scheme CactusTest \
          -configuration Release \
-         -destination "platform=iOS Simulator,id=$DEVICE_UUID" \
+         -destination "platform=iOS Simulator,id=$device_uuid" \
          -derivedDataPath "$SCRIPT_DIR/build" \
          ARCHS=arm64 \
          ONLY_ACTIVE_ARCH=NO \
          IPHONEOS_DEPLOYMENT_TARGET=13.0 \
-         SDKROOT="$IOS_SIM_SDK_PATH" \
-         PRODUCT_BUNDLE_IDENTIFIER="$BUNDLE_ID" \
+         SDKROOT="$ios_sim_sdk_path" \
+         PRODUCT_BUNDLE_IDENTIFIER="$bundle_id" \
          build; then
-        echo ""
-        echo "Error: Build failed"
+        echo "Build failed"
         exit 1
     fi
 
-    APP_PATH="$SCRIPT_DIR/build/Build/Products/Release-iphonesimulator/CactusTest.app"
+    app_path="$SCRIPT_DIR/build/Build/Products/Release-iphonesimulator/CactusTest.app"
 else
-    IOS_SDK_PATH=$(xcrun --sdk iphoneos --show-sdk-path)
-    if [ -z "$IOS_SDK_PATH" ] || [ ! -d "$IOS_SDK_PATH" ]; then
-        echo ""
-        echo "Error: iOS SDK not found"
+    ios_sdk_path=$(xcrun --sdk iphoneos --show-sdk-path)
+    if [ -z "$ios_sdk_path" ] || [ ! -d "$ios_sdk_path" ]; then
+        echo "iOS SDK not found"
         exit 1
     fi
 
-    if ! xcodebuild -project "$XCODEPROJ_PATH" \
+    if ! xcodebuild -project "$xcodeproj_path" \
          -scheme CactusTest \
          -configuration Release \
-         -destination "platform=iOS,id=$DEVICE_UUID" \
+         -destination "platform=iOS,id=$device_uuid" \
          -derivedDataPath "$SCRIPT_DIR/build" \
          -allowProvisioningUpdates \
          ARCHS=arm64 \
          ONLY_ACTIVE_ARCH=NO \
          IPHONEOS_DEPLOYMENT_TARGET=13.0 \
-         SDKROOT="$IOS_SDK_PATH" \
-         PRODUCT_BUNDLE_IDENTIFIER="$BUNDLE_ID" \
+         SDKROOT="$ios_sdk_path" \
+         PRODUCT_BUNDLE_IDENTIFIER="$bundle_id" \
          CODE_SIGN_STYLE="Automatic" \
          build; then
-        echo ""
-        echo "Error: Build failed"
+        echo "Build failed"
         exit 1
     fi
 
-    APP_PATH="$SCRIPT_DIR/build/Build/Products/Release-iphoneos/CactusTest.app"
+    app_path="$SCRIPT_DIR/build/Build/Products/Release-iphoneos/CactusTest.app"
 fi
 
-MODEL_DIR=$(echo "$MODEL_NAME" | sed 's|.*/||' | tr '[:upper:]' '[:lower:]')
-TRANSCRIBE_MODEL_DIR=$(echo "$TRANSCRIBE_MODEL_NAME" | sed 's|.*/||' | tr '[:upper:]' '[:lower:]')
-MODEL_SRC="$PROJECT_ROOT/weights/$MODEL_DIR"
-TRANSCRIBE_MODEL_SRC="$PROJECT_ROOT/weights/$TRANSCRIBE_MODEL_DIR"
+model_dir=$(echo "$MODEL_NAME" | sed 's|.*/||' | tr '[:upper:]' '[:lower:]')
+transcribe_model_dir=$(echo "$TRANSCRIBE_MODEL_NAME" | sed 's|.*/||' | tr '[:upper:]' '[:lower:]')
+model_src="$PROJECT_ROOT/weights/$model_dir"
+transcribe_model_src="$PROJECT_ROOT/weights/$transcribe_model_dir"
 
-echo ""
 echo "Copying model weights to app bundle..."
-if ! cp -R "$MODEL_SRC" "$APP_PATH/"; then
+if ! cp -R "$model_src" "$app_path/"; then
     echo "Warning: Could not copy model weights"
 fi
-if ! cp -R "$TRANSCRIBE_MODEL_SRC" "$APP_PATH/"; then
+if ! cp -R "$transcribe_model_src" "$app_path/"; then
     echo "Warning: Could not copy transcribe model weights"
 fi
 
 echo ""
-echo "Step 5: Running tests..."
+echo "Step 4: Running tests..."
 echo "------------------------"
 
-if [ "$DEVICE_TYPE" = "simulator" ]; then
-    echo "Installing on: $DEVICE_NAME"
+if [ "$device_type" = "simulator" ]; then
+    echo "Installing on: $device_name"
 
-    xcrun simctl boot "$DEVICE_UUID" || true
+    xcrun simctl boot "$device_uuid" || true
 
-    if ! xcrun simctl install "$DEVICE_UUID" "$APP_PATH"; then
-        echo ""
-        echo "Error: Failed to install app on simulator"
+    if ! xcrun simctl install "$device_uuid" "$app_path"; then
+        echo "Failed to install app on simulator"
         exit 1
     fi
 
     echo "Launching tests..."
 
-    SIMCTL_CHILD_CACTUS_TEST_MODEL="$MODEL_DIR" \
-    SIMCTL_CHILD_CACTUS_TEST_TRANSCRIBE_MODEL="$TRANSCRIBE_MODEL_DIR" \
-    xcrun simctl launch --console-pty "$DEVICE_UUID" "$BUNDLE_ID"
+    SIMCTL_CHILD_CACTUS_TEST_MODEL="$model_dir" \
+    SIMCTL_CHILD_CACTUS_TEST_TRANSCRIBE_MODEL="$transcribe_model_dir" \
+    xcrun simctl launch --console-pty "$device_uuid" "$bundle_id"
 
     echo ""
 else
-    echo "Installing on: $DEVICE_NAME"
+    echo "Installing on: $device_name"
 
-    if ! xcrun devicectl device install app --device "$DEVICE_UUID" "$APP_PATH"; then
-        echo ""
-        echo "Error: Failed to install app on device"
-        echo "Common issues: device not trusted, code signing failed, or device locked"
+    if ! xcrun devicectl device install app --device "$device_uuid" "$app_path"; then
+        echo "Failed to install app on device"
+        echo "Common issues:"
+        echo "  - Device not trusted"
+        echo "  - Code signing failed"
+        echo "  - Device locked or screen off"
         exit 1
     fi
 
     echo "Launching tests..."
     echo "(Logs will be fetched from device after completion)"
 
-    DEVICECTL_CHILD_CACTUS_TEST_MODEL="$MODEL_DIR" \
-    DEVICECTL_CHILD_CACTUS_TEST_TRANSCRIBE_MODEL="$TRANSCRIBE_MODEL_DIR" \
-    xcrun devicectl device process launch --device "$DEVICE_UUID" "$BUNDLE_ID" || true
+    DEVICECTL_CHILD_CACTUS_TEST_MODEL="$model_dir" \
+    DEVICECTL_CHILD_CACTUS_TEST_TRANSCRIBE_MODEL="$transcribe_model_dir" \
+    xcrun devicectl device process launch --device "$device_uuid" "$bundle_id" || true
 
-    # Wait for process to complete (poll every 2s, max 5 minutes)
-    MAX_WAIT=300
-    ELAPSED=0
-    while [ $ELAPSED -lt $MAX_WAIT ]; do
-        if xcrun devicectl device info processes --device "$DEVICE_UUID" | grep -q "CactusTest.app/CactusTest"; then
+    max_wait=300
+    elapsed=0
+    while [ $elapsed -lt $max_wait ]; do
+        if xcrun devicectl device info processes --device "$device_uuid" | grep -q "CactusTest.app/CactusTest"; then
             sleep 2
-            ELAPSED=$((ELAPSED + 2))
+            elapsed=$((elapsed + 2))
         else
             break
         fi
     done
 
-    if [ $ELAPSED -ge $MAX_WAIT ]; then
-        echo "Warning: Test execution timeout reached (${MAX_WAIT}s)"
+    if [ $elapsed -ge $max_wait ]; then
+        echo "Warning: Test execution timeout reached (${max_wait}s)"
     fi
 
     sleep 1
 
     echo "Fetching logs from device..."
 
-    TEMP_LOG_DIR=$(mktemp -d)
-    TEMP_LOG_FILE="$TEMP_LOG_DIR/cactus_test.log"
+    temp_log_dir=$(mktemp -d)
+    temp_log_file="$temp_log_dir/cactus_test.log"
 
     if xcrun devicectl device copy from \
-        --device "$DEVICE_UUID" \
+        --device "$device_uuid" \
         --source "Documents/cactus_test.log" \
-        --destination "$TEMP_LOG_FILE" \
+        --destination "$temp_log_file" \
         --domain-type appDataContainer \
-        --domain-identifier "$BUNDLE_ID"; then
+        --domain-identifier "$bundle_id"; then
 
-        if [ -f "$TEMP_LOG_FILE" ]; then
+        if [ -f "$temp_log_file" ]; then
             echo ""
-            cat "$TEMP_LOG_FILE"
+            cat "$temp_log_file"
         else
             echo "Warning: Could not find downloaded log file"
         fi
 
-        rm -rf "$TEMP_LOG_DIR"
+        rm -rf "$temp_log_dir"
     else
         echo "Warning: Could not fetch log file from device"
     fi

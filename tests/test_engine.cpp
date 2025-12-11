@@ -493,7 +493,7 @@ static bool test_transcription() {
 
 static bool test_image_embeddings() {
     std::cout << "\n╔══════════════════════════════════════════╗\n"
-              << "║         IMAGE EMBEDDING TEST            ║\n"
+              << "║         IMAGE EMBEDDING TEST             ║\n"
               << "╚══════════════════════════════════════════╝\n";
 
     if (!g_model_path) {
@@ -532,7 +532,7 @@ static bool test_image_embeddings() {
 
 static bool test_audio_embeddings() {
     std::cout << "\n╔══════════════════════════════════════════╗\n"
-              << "║         AUDIO EMBEDDING TEST            ║\n"
+              << "║         AUDIO EMBEDDING TEST             ║\n"
               << "╚══════════════════════════════════════════╝\n";
 
     if (!g_transcribe_model_path) {
@@ -570,7 +570,7 @@ static bool test_audio_embeddings() {
 
 static bool test_pcm_transcription() {
     std::cout << "\n╔══════════════════════════════════════════╗\n"
-              << "║       PCM BUFFER TRANSCRIPTION          ║\n"
+              << "║       PCM BUFFER TRANSCRIPTION           ║\n"
               << "╚══════════════════════════════════════════╝\n";
 
     if (!g_transcribe_model_path) {
