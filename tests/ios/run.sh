@@ -7,8 +7,7 @@ MODEL_NAME="$1"
 TRANSCRIBE_MODEL_NAME="$2"
 
 echo "Running Cactus tests on iOS..."
-echo "==============================="
-echo ""
+echo "============================"
 
 if [ ! -d "/Applications/Xcode.app" ]; then
     echo "Xcode not installed"
@@ -87,9 +86,9 @@ if [ "$physical_count" -gt 0 ]; then
         if [ "$type" = "device" ]; then
             device_num=$((device_num + 1))
             if [ "$status" = "offline" ]; then
-                printf "  %2d) %s [offline]\n" "$device_num" "$name"
+                printf "  %2d. %s [offline]\n" "$device_num" "$name"
             else
-                printf "  %2d) %s\n" "$device_num" "$name"
+                printf "  %2d. %s\n" "$device_num" "$name"
             fi
         fi
     done <<< "$all_devices"
@@ -100,7 +99,7 @@ echo "Simulators:"
 while IFS='|' read -r name type uuid status; do
     if [ "$type" = "simulator" ]; then
         device_num=$((device_num + 1))
-        printf "  %2d) %s\n" "$device_num" "$name"
+        printf "  %2d. %s\n" "$device_num" "$name"
     fi
 done <<< "$all_devices"
 
@@ -287,9 +286,9 @@ if [ "$device_type" = "simulator" ]; then
     fi
 
     echo "Launching tests..."
-    echo "Using model: $model_dir"
-    echo "Using transcribe model: $transcribe_model_dir"
-    echo "Using assets: assets"
+    echo "Using model path: $model_dir"
+    echo "Using transcribe model path: $transcribe_model_dir"
+    echo "Using assets path: assets"
 
     SIMCTL_CHILD_CACTUS_TEST_MODEL="$model_dir" \
     SIMCTL_CHILD_CACTUS_TEST_TRANSCRIBE_MODEL="$transcribe_model_dir" \
@@ -309,9 +308,9 @@ else
 
     echo "Launching tests..."
     echo "(Logs will be fetched from device after completion)"
-    echo "Using model: $model_dir"
-    echo "Using transcribe model: $transcribe_model_dir"
-    echo "Using assets: assets"
+    echo "Using model path: $model_dir"
+    echo "Using transcribe model path: $transcribe_model_dir"
+    echo "Using assets path: assets"
 
     DEVICECTL_CHILD_CACTUS_TEST_MODEL="$model_dir" \
     DEVICECTL_CHILD_CACTUS_TEST_TRANSCRIBE_MODEL="$transcribe_model_dir" \

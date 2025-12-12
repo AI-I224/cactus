@@ -7,8 +7,7 @@ MODEL_NAME="$1"
 TRANSCRIBE_MODEL_NAME="$2"
 
 echo "Running Cactus tests on Android..."
-echo "===================================="
-echo ""
+echo "============================"
 
 if ! command -v adb; then
     echo "adb not found"
@@ -83,9 +82,9 @@ if [ "$physical_count" -gt 0 ]; then
         if [ "$type" = "device" ]; then
             device_num=$((device_num + 1))
             if [ -n "$android_version" ]; then
-                printf "  %2d) %s (Android %s)\n" "$device_num" "$name" "$android_version"
+                printf "  %2d. %s (Android %s)\n" "$device_num" "$name" "$android_version"
             else
-                printf "  %2d) %s\n" "$device_num" "$name"
+                printf "  %2d. %s\n" "$device_num" "$name"
             fi
         fi
     done <<< "$all_devices"
@@ -97,12 +96,12 @@ while IFS='|' read -r name type device_id status model android_version; do
     if [ "$type" = "emulator" ]; then
         device_num=$((device_num + 1))
         if [ "$status" = "offline" ]; then
-            printf "  %2d) %s [not running]\n" "$device_num" "$name"
+            printf "  %2d. %s [not running]\n" "$device_num" "$name"
         else
             if [ -n "$android_version" ]; then
-                printf "  %2d) %s (Android %s)\n" "$device_num" "$name" "$android_version"
+                printf "  %2d. %s (Android %s)\n" "$device_num" "$name" "$android_version"
             else
-                printf "  %2d) %s\n" "$device_num" "$name"
+                printf "  %2d. %s\n" "$device_num" "$name"
             fi
         fi
     fi
@@ -272,9 +271,9 @@ done
 echo ""
 echo "Step 5: Running tests..."
 echo "------------------------"
-echo "Using model: $device_model_dir/$model_dir"
-echo "Using transcribe model: $device_model_dir/$transcribe_model_dir"
-echo "Using assets: $device_assets_dir/assets"
+echo "Using model path: $device_model_dir/$model_dir"
+echo "Using transcribe model path: $device_model_dir/$transcribe_model_dir"
+echo "Using assets path: $device_assets_dir/assets"
 
 for test_exe in "${test_executables[@]}"; do
     test_name=$(basename "$test_exe")
