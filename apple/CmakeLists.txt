@@ -101,20 +101,11 @@ target_include_directories(cactus PUBLIC
 find_library(COREML_FRAMEWORK CoreML REQUIRED)
 find_library(FOUNDATION_FRAMEWORK Foundation REQUIRED)
 
-if(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
-    find_library(CURL_LIBRARY NAMES curl libcurl REQUIRED)
-    message(STATUS "Found CURL library for macOS: ${CURL_LIBRARY}")
-endif()
-
 if(CACTUS_HAS_PRO)
     target_link_libraries(cactus PUBLIC "-force_load ${CACTUS_PRO_LIB}")
 endif()
 
-if(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
-    target_link_libraries(cactus PUBLIC ${COREML_FRAMEWORK} ${FOUNDATION_FRAMEWORK} ${CURL_LIBRARY})
-else()
-    target_link_libraries(cactus PUBLIC ${COREML_FRAMEWORK} ${FOUNDATION_FRAMEWORK})
-endif()
+target_link_libraries(cactus PUBLIC ${COREML_FRAMEWORK} ${FOUNDATION_FRAMEWORK})
 
 target_compile_definitions(cactus PRIVATE
     PLATFORM_CPU_ONLY=1
