@@ -145,7 +145,15 @@ def convert_hf_tokenizer(tokenizer, output_dir, token=None):
             '<start_of_turn>': None,
             '<end_of_turn>': None,
             '<start_of_image>': None,
-            '<end_of_image>': None
+            '<end_of_image>': None,
+            # Gemma 3 function calling tokens
+            '<start_function_declaration>': None,
+            '<end_function_declaration>': None,
+            '<start_function_call>': None,
+            '<end_function_call>': None,
+            '<start_function_response>': None,
+            '<end_function_response>': None,
+            '<escape>': None
         }
 
         vocab = tokenizer.get_vocab()
@@ -218,7 +226,12 @@ def convert_hf_tokenizer(tokenizer, output_dir, token=None):
                             tool_related = ['<tool_call>', '</tool_call>',
                                           '<tool_response>', '</tool_response>',
                                           '<tools>', '</tools>',
-                                          '<think>', '</think>']
+                                          '<think>', '</think>',
+                                          # Gemma 3 function calling tokens
+                                          '<start_function_declaration>', '<end_function_declaration>',
+                                          '<start_function_call>', '<end_function_call>',
+                                          '<start_function_response>', '<end_function_response>',
+                                          '<escape>']
 
                             if any(x == content for x in tool_related):
                                 tool_tokens[token_id] = token_info

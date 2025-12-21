@@ -297,17 +297,305 @@ inline std::string format_tools_for_prompt(const std::vector<ToolFunction>& tool
     return formatted_tools_json;
 }
 
+// Gemma tool formatting helpers
+inline std::string gemma_escape(const std::string& s) {
+    return "<escape>" + s + "<escape>";
+}
+
+inline std::string gemma_to_upper(const std::string& s) {
+    std::string result = s;
+    for (auto& c : result) c = std::toupper(c);
+    return result;
+}
+
+// Forward declaration
+inline std::string gemma_format_json_value(const std::string& json, size_t& pos, bool is_type_value = false);
+
+// Extract a JSON string value (after opening quote)
+inline std::string gemma_extract_string(const std::string& json, size_t& pos) {
+    std::string value;
+    while (pos < json.length() && json[pos] != '"') {
+        if (json[pos] == '\\' && pos + 1 < json.length()) {
+            pos++;
+            if (json[pos] == 'n') value += '\n';
+            else if (json[pos] == 't') value += '\t';
+            else if (json[pos] == '"') value += '"';
+            else if (json[pos] == '\\') value += '\\';
+            else value += json[pos];
+        } else {
+            value += json[pos];
+        }
+        pos++;
+    }
+    if (pos < json.length()) pos++; // skip closing quote
+    return value;
+}
+
+// Format a JSON value to Gemma format
+inline std::string gemma_format_json_value(const std::string& json, size_t& pos, bool is_type_value) {
+    while (pos < json.length() && std::isspace(json[pos])) pos++;
+    if (pos >= json.length()) return "";
+
+    char c = json[pos];
+
+    if (c == '"') {
+        pos++; // skip opening quote
+        std::string value = gemma_extract_string(json, pos);
+        if (is_type_value) {
+            return gemma_escape(gemma_to_upper(value));
+        }
+        return gemma_escape(value);
+    } else if (c == '{') {
+        std::string result = "{";
+        pos++; // skip {
+        bool first = true;
+
+        while (pos < json.length()) {
+            while (pos < json.length() && std::isspace(json[pos])) pos++;
+            if (pos >= json.length() || json[pos] == '}') { pos++; break; }
+            if (json[pos] == ',') { pos++; continue; }
+
+            // Get key
+            if (json[pos] != '"') break;
+            pos++;
+            std::string key = gemma_extract_string(json, pos);
+
+            // Skip colon
+            while (pos < json.length() && std::isspace(json[pos])) pos++;
+            if (pos < json.length() && json[pos] == ':') pos++;
+
+            // Get value - check if this is a "type" field
+            bool is_type = (key == "type");
+            std::string value = gemma_format_json_value(json, pos, is_type);
+
+            if (!first) result += ",";
+            first = false;
+            result += key + ":" + value;
+        }
+        result += "}";
+        return result;
+    } else if (c == '[') {
+        std::string result = "[";
+        pos++; // skip [
+        bool first = true;
+
+        while (pos < json.length()) {
+            while (pos < json.length() && std::isspace(json[pos])) pos++;
+            if (pos >= json.length() || json[pos] == ']') { pos++; break; }
+            if (json[pos] == ',') { pos++; continue; }
+
+            std::string value = gemma_format_json_value(json, pos, false);
+
+            if (!first) result += ",";
+            first = false;
+            result += value;
+        }
+        result += "]";
+        return result;
+    } else if (json.substr(pos, 4) == "true") {
+        pos += 4;
+        return "true";
+    } else if (json.substr(pos, 5) == "false") {
+        pos += 5;
+        return "false";
+    } else if (json.substr(pos, 4) == "null") {
+        pos += 4;
+        return "null";
+    } else {
+        // Number
+        size_t start = pos;
+        while (pos < json.length() && (std::isdigit(json[pos]) || json[pos] == '.' ||
+               json[pos] == '-' || json[pos] == '+' || json[pos] == 'e' || json[pos] == 'E')) {
+            pos++;
+        }
+        return json.substr(start, pos - start);
+    }
+}
+
+// Format tools for Gemma's declaration format
+inline std::string format_gemma_tools_for_prompt(const std::vector<ToolFunction>& tools) {
+    if (tools.empty()) return "";
+
+    std::string result;
+    for (const auto& tool : tools) {
+        result += "<start_function_declaration>";
+        result += "declaration:" + tool.name + "{";
+        result += "description:" + gemma_escape(tool.description);
+
+        // Format parameters if present
+        if (tool.parameters.find("schema") != tool.parameters.end()) {
+            const std::string& params_json = tool.parameters.at("schema");
+            size_t pos = 0;
+            std::string formatted_params = gemma_format_json_value(params_json, pos, false);
+            result += ",parameters:" + formatted_params;
+        }
+
+        result += "}";
+        result += "<end_function_declaration>";
+    }
+    return result;
+}
+
+// Helper to strip <escape>...</escape> markers from a string
+inline std::string gemma_unescape(const std::string& s) {
+    const std::string ESCAPE_TAG = "<escape>";
+    std::string result = s;
+    size_t pos = 0;
+    while ((pos = result.find(ESCAPE_TAG, pos)) != std::string::npos) {
+        result.erase(pos, ESCAPE_TAG.length());
+    }
+    return result;
+}
+
+// Parse Gemma's {key:value,...} format to JSON
+inline std::string gemma_args_to_json(const std::string& args_content) {
+    std::string result = "{";
+    size_t pos = 0;
+    bool first = true;
+
+    // Skip opening brace if present
+    if (!args_content.empty() && args_content[0] == '{') pos = 1;
+
+    while (pos < args_content.length()) {
+        // Skip whitespace
+        while (pos < args_content.length() && std::isspace(args_content[pos])) pos++;
+        if (pos >= args_content.length() || args_content[pos] == '}') break;
+        if (args_content[pos] == ',') { pos++; continue; }
+
+        // Extract key (until :)
+        size_t key_start = pos;
+        while (pos < args_content.length() && args_content[pos] != ':') pos++;
+        std::string key = args_content.substr(key_start, pos - key_start);
+        if (pos < args_content.length()) pos++; // skip :
+
+        // Extract value
+        std::string value;
+        while (pos < args_content.length() && std::isspace(args_content[pos])) pos++;
+
+        if (pos < args_content.length()) {
+            if (args_content.substr(pos, 8) == "<escape>") {
+                // String value wrapped in <escape>
+                pos += 8; // skip <escape>
+                size_t val_end = args_content.find("<escape>", pos);
+                if (val_end != std::string::npos) {
+                    value = "\"" + args_content.substr(pos, val_end - pos) + "\"";
+                    pos = val_end + 8; // skip closing <escape>
+                }
+            } else if (args_content[pos] == '{') {
+                // Nested object - find matching }
+                int depth = 1;
+                size_t start = pos;
+                pos++;
+                while (pos < args_content.length() && depth > 0) {
+                    if (args_content[pos] == '{') depth++;
+                    else if (args_content[pos] == '}') depth--;
+                    pos++;
+                }
+                value = gemma_args_to_json(args_content.substr(start, pos - start));
+            } else if (args_content[pos] == '[') {
+                // Array - find matching ]
+                int depth = 1;
+                size_t start = pos;
+                pos++;
+                while (pos < args_content.length() && depth > 0) {
+                    if (args_content[pos] == '[') depth++;
+                    else if (args_content[pos] == ']') depth--;
+                    pos++;
+                }
+                // For arrays, we need to process each element
+                std::string arr_content = args_content.substr(start + 1, pos - start - 2);
+                value = "[";
+                size_t arr_pos = 0;
+                bool first_item = true;
+                while (arr_pos < arr_content.length()) {
+                    while (arr_pos < arr_content.length() && (std::isspace(arr_content[arr_pos]) || arr_content[arr_pos] == ',')) arr_pos++;
+                    if (arr_pos >= arr_content.length()) break;
+
+                    if (!first_item) value += ",";
+                    first_item = false;
+
+                    if (arr_content.substr(arr_pos, 8) == "<escape>") {
+                        arr_pos += 8;
+                        size_t end = arr_content.find("<escape>", arr_pos);
+                        if (end != std::string::npos) {
+                            value += "\"" + arr_content.substr(arr_pos, end - arr_pos) + "\"";
+                            arr_pos = end + 8;
+                        }
+                    } else {
+                        size_t end = arr_content.find_first_of(",]", arr_pos);
+                        if (end == std::string::npos) end = arr_content.length();
+                        value += arr_content.substr(arr_pos, end - arr_pos);
+                        arr_pos = end;
+                    }
+                }
+                value += "]";
+            } else {
+                // Number, boolean, or null
+                size_t val_start = pos;
+                while (pos < args_content.length() && args_content[pos] != ',' && args_content[pos] != '}') {
+                    pos++;
+                }
+                value = args_content.substr(val_start, pos - val_start);
+                // Trim trailing whitespace
+                while (!value.empty() && std::isspace(value.back())) value.pop_back();
+            }
+        }
+
+        if (!first) result += ",";
+        first = false;
+        result += "\"" + key + "\":" + value;
+    }
+
+    result += "}";
+    return result;
+}
+
 inline void parse_function_calls_from_response(const std::string& response_text,
                                                std::string& regular_response,
                                                std::vector<std::string>& function_calls) {
     regular_response = response_text;
     function_calls.clear();
 
+    // Parse Gemma-style function calls: <start_function_call>call:name{...}<end_function_call>
+    const std::string GEMMA_CALL_START = "<start_function_call>";
+    const std::string GEMMA_CALL_END = "<end_function_call>";
+    size_t gemma_pos = 0;
+
+    while ((gemma_pos = regular_response.find(GEMMA_CALL_START, gemma_pos)) != std::string::npos) {
+        size_t content_start = gemma_pos + GEMMA_CALL_START.length();
+        size_t call_end_pos = regular_response.find(GEMMA_CALL_END, content_start);
+
+        if (call_end_pos != std::string::npos) {
+            std::string call_content = regular_response.substr(content_start, call_end_pos - content_start);
+
+            // Parse call:func_name{...}
+            if (call_content.substr(0, 5) == "call:") {
+                size_t brace_pos = call_content.find('{');
+                if (brace_pos != std::string::npos) {
+                    std::string func_name = call_content.substr(5, brace_pos - 5);
+                    std::string args_content = call_content.substr(brace_pos);
+
+                    // Convert Gemma args format to JSON
+                    std::string args_json = gemma_args_to_json(args_content);
+
+                    std::string json_call = "{\"name\":\"" + func_name + "\",\"arguments\":" + args_json + "}";
+                    function_calls.push_back(json_call);
+                }
+            }
+
+            // Remove the function call from the response
+            regular_response.erase(gemma_pos, call_end_pos + GEMMA_CALL_END.length() - gemma_pos);
+        } else {
+            break;
+        }
+    }
+
+    // Parse LFM2-style function calls: <|tool_call_start|>[name(args)]<|tool_call_end|>
     const std::string TOOL_CALL_START = "<|tool_call_start|>";
     const std::string TOOL_CALL_END = "<|tool_call_end|>";
     size_t tool_start_pos = 0;
 
-    while ((tool_start_pos = response_text.find(TOOL_CALL_START, tool_start_pos)) != std::string::npos) {
+    while ((tool_start_pos = regular_response.find(TOOL_CALL_START, tool_start_pos)) != std::string::npos) {
         size_t content_start = tool_start_pos + TOOL_CALL_START.length();
         size_t tool_end_pos = response_text.find(TOOL_CALL_END, content_start);
 

@@ -73,7 +73,13 @@ int cactus_complete(
             }
         }
 
-        std::string formatted_tools = format_tools_for_prompt(tools);
+        Config::ModelType model_type = handle->model->get_config().model_type;
+        std::string formatted_tools;
+        if (model_type == Config::ModelType::GEMMA) {
+            formatted_tools = format_gemma_tools_for_prompt(tools);
+        } else {
+            formatted_tools = format_tools_for_prompt(tools);
+        }
         std::string full_prompt = tokenizer->format_chat_prompt(messages, true, formatted_tools);
 
         if (full_prompt.find("ERROR:") == 0) {

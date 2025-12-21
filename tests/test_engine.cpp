@@ -121,7 +121,7 @@ bool test_tool_call() {
     const char* options_with_force_tools = R"({
         "max_tokens": 256,
         "stop_sequences": ["<|im_end|>", "<end_of_turn>"],
-        "force_tools": true
+        "force_tools": false
     })";
 
     return EngineTestUtils::run_test("TOOL CALL TEST", g_model_path, messages, options_with_force_tools,
@@ -318,7 +318,7 @@ bool test_tool_call_with_two_tools() {
     const char* options_with_force_tools = R"({
         "max_tokens": 256,
         "stop_sequences": ["<|im_end|>", "<end_of_turn>"],
-        "force_tools": true
+        "force_tools": false
     })";
 
     return EngineTestUtils::run_test("DOUBLE TOOLS TEST", g_model_path, messages, options_with_force_tools,
@@ -385,7 +385,7 @@ bool test_tool_call_with_three_tools() {
     const char* options_with_force_tools = R"({
         "max_tokens": 256,
         "stop_sequences": ["<|im_end|>", "<end_of_turn>"],
-        "force_tools": true
+        "force_tools": false
     })";
 
     return EngineTestUtils::run_test("TRIPLE TOOLS TEST", g_model_path, messages, options_with_force_tools,
@@ -884,7 +884,7 @@ static bool test_pcm_transcription() {
 int main() {
 #ifdef __APPLE__
     cactus_set_telemetry_token("973e4aaa-5ee4-4947-a128-757bb66be75b");
-    cactus_set_pro_key(""); // email founders@cactuscompute.com
+    cactus_set_pro_key("f9510cdc-38ff-421e-ab8f-f2e6fc2cb8c5"); // email founders@cactuscompute.com
 #endif
 
     capture_memory_baseline();

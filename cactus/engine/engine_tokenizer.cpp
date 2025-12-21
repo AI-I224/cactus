@@ -337,49 +337,56 @@ std::string Tokenizer::format_lfm2_vl_style(
 
 
 std::string Tokenizer::format_gemma_style(const std::vector<ChatMessage>& messages, bool add_generation_prompt, const std::string& tools_json) const {
+    std::string result = "<bos>";
 
-    if (!tools_json.empty()) {
-        return "ERROR: Tool calls are not supported for Gemma models";
-    }
-
-    std::string result;
-
-    result = "<bos>";
-
-    std::string first_user_prefix = "";
+    std::string system_content;
     size_t start_idx = 0;
 
-    if (!messages.empty() && messages[0].role == "system") {
-        first_user_prefix = messages[0].content + "\n\n";
+    if (!messages.empty() && (messages[0].role == "system" || messages[0].role == "developer")) {
+        system_content = messages[0].content;
         start_idx = 1;
     }
 
-    bool first_user = true;
+    if (!tools_json.empty() || !system_content.empty()) {
+        result += "<start_of_turn>developer\n";
+        if (!system_content.empty()) {
+            result += system_content;
+        }
+        if (!tools_json.empty()) {
+            result += tools_json;
+        }
+        result += "<end_of_turn>\n";
+    }
+
+    std::string prev_message_type;
+
     for (size_t i = start_idx; i < messages.size(); i++) {
         const auto& msg = messages[i];
 
-        if (msg.role == "user") {
-            result += "<start_of_turn>user";
-            result += "\n";
-            if (first_user && !first_user_prefix.empty()) {
-                result += first_user_prefix;
-                first_user = false;
+        if (msg.role == "tool") {
+            result += "<start_function_response>response:tool{value:" + msg.content + "}<end_function_response>";
+            prev_message_type = "tool_response";
+        } else if (msg.role == "user") {
+            if (prev_message_type != "tool_response") {
+                result += "<start_of_turn>user\n";
             }
             result += msg.content;
-            result += "<end_of_turn>";
-            result += "\n";
-        } else if (msg.role == "assistant") {
-            result += "<start_of_turn>model";
-            result += "\n";
+            result += "<end_of_turn>\n";
+            prev_message_type = "content";
+        } else if (msg.role == "assistant" || msg.role == "model") {
+            if (prev_message_type != "tool_response") {
+                result += "<start_of_turn>model\n";
+            }
             result += msg.content;
-            result += "<end_of_turn>";
-            result += "\n";
+            result += "<end_of_turn>\n";
+            prev_message_type = "content";
         }
     }
 
     if (add_generation_prompt) {
-        result += "<start_of_turn>model";
-        result += "\n";
+        if (prev_message_type != "tool_response") {
+            result += "<start_of_turn>model\n";
+        }
     }
 
     return result;
