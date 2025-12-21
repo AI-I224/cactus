@@ -34,7 +34,7 @@ namespace index {
             void add_documents(const std::vector<Document>& documents);
             void delete_documents(const std::vector<std::string>& doc_ids);
             std::vector<Document> get_documents(const std::vector<std::string>& doc_ids);
-            std::vector<SearchResult> query(const std::vector<float>& embedding, const SearchOptions& options);
+            std::vector<std::vector<SearchResult>> query(const std::vector<std::vector<float>>& embeddings, const SearchOptions& options);
 
         private:
             struct IndexHeader {

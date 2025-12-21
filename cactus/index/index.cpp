@@ -128,9 +128,12 @@ namespace index {
                 0
             };
 
+            std::vector<float> normalized_embedding(doc.embedding);
+            normalize(normalized_embedding.data(), embedding_dim_);
+
             size_t embedding_bytes = embedding_dim_ * sizeof(float);
             if (write(index_fd, &entry, sizeof(IndexEntry)) != sizeof(IndexEntry)
-                || write(index_fd, doc.embedding.data(), embedding_bytes) != static_cast<ssize_t>(embedding_bytes)) {
+                || write(index_fd, normalized_embedding.data(), embedding_bytes) != static_cast<ssize_t>(embedding_bytes)) {
                 close(index_fd);
                 close(data_fd);
                 throw std::runtime_error("Failed to write index entry");
@@ -210,54 +213,70 @@ namespace index {
         return results;
     }
 
-    std::vector<SearchResult> Index::query(const std::vector<float>& embedding, const SearchOptions& options) {
-        if (options.top_k == 0) {
+    std::vector<std::vector<SearchResult>> Index::query(const std::vector<std::vector<float>>& embeddings, const SearchOptions& options) {
+        if (embeddings.empty()) {
             return {};
         }
 
-        std::vector<float> normalized_embedding(embedding);
-        normalize(normalized_embedding.data(), embedding_dim_);
+        std::vector<std::vector<float>> normalized_embeddings;
+        normalized_embeddings.reserve(embeddings.size());
 
-        auto cmp = [](const SearchResult& a, const SearchResult& b) {
-            return a.score > b.score; 
-        };
-        std::priority_queue<SearchResult, std::vector<SearchResult>, decltype(cmp)> top_results(cmp);
+        for (const auto& embedding : embeddings) {
+            std::vector<float> normalized_embedding(embedding);
+            normalize(normalized_embedding.data(), embedding_dim_);
+            normalized_embeddings.emplace_back(std::move(normalized_embedding));
+        }
+
+        std::vector<std::vector<SearchResult>> all_results;
+        all_results.reserve(embeddings.size());
 
         const char* index_ptr = static_cast<const char*>(mapped_index_);
         const char* entries = index_ptr + sizeof(IndexHeader);
         const char* data_ptr = static_cast<const char*>(mapped_data_);
 
-        for (uint32_t i = 0; i < num_documents_; ++i) {
-            const IndexEntry& entry = *reinterpret_cast<const IndexEntry*>(entries + i * IndexEntry::size(embedding_dim_));
-            const float* entry_embedding = entry.embedding();
+        auto cmp = [](const SearchResult& a, const SearchResult& b) {
+            return a.score > b.score;
+        };
 
-            if (entry.flags & 0x1) {
-                continue;
+        for (const auto& normalized_embedding : normalized_embeddings) {
+            std::priority_queue<SearchResult, std::vector<SearchResult>, decltype(cmp)> top_results(cmp);
+
+            for (uint32_t i = 0; i < num_documents_; ++i) {
+                const IndexEntry& entry = *reinterpret_cast<const IndexEntry*>(entries + i * IndexEntry::size(embedding_dim_));
+                const float* entry_embedding = entry.embedding();
+
+                if (entry.flags & 0x1) {
+                    continue;
+                }
+
+                float score = dot_product(normalized_embedding.data(), entry_embedding, embedding_dim_);
+
+                if (score < options.score_threshold) {
+                    continue;
+                }
+
+                if (top_results.size() < options.top_k) {
+                    const DataEntry* data_entry = reinterpret_cast<const DataEntry*>(data_ptr + entry.data_offset);
+                    top_results.emplace(std::string(data_entry->doc_id(), data_entry->doc_id_len), score);
+                } else if (score > top_results.top().score) {
+                    top_results.pop();
+                    const DataEntry* data_entry = reinterpret_cast<const DataEntry*>(data_ptr + entry.data_offset);
+                    top_results.emplace(std::string(data_entry->doc_id(), data_entry->doc_id_len), score);
+                }
             }
 
-            float score = dot_product(normalized_embedding.data(), entry_embedding, embedding_dim_);
+            std::vector<SearchResult> results;
+            results.resize(top_results.size());
 
-            if (score < options.score_threshold) {
-                continue;
-            }
-
-            if (top_results.size() < options.top_k) {
-                const DataEntry* data_entry = reinterpret_cast<const DataEntry*>(data_ptr + entry.data_offset);
-                top_results.emplace(std::string(data_entry->doc_id(), data_entry->doc_id_len), score);
-            } else if (score > top_results.top().score) {
+            for (size_t i = top_results.size(); i-- > 0;) {
+                results[i] = top_results.top();
                 top_results.pop();
-                const DataEntry* data_entry = reinterpret_cast<const DataEntry*>(data_ptr + entry.data_offset);
-                top_results.emplace(std::string(data_entry->doc_id(), data_entry->doc_id_len), score);
             }
+
+            all_results.emplace_back(std::move(results));
         }
 
-        std::vector<SearchResult> results(top_results.size());
-        for (size_t i = top_results.size(); i-- > 0;) {
-            results[i] = top_results.top();
-            top_results.pop();
-        }
-
-        return results;
+        return all_results;
     }
 
     void Index::parse_index_header() {
