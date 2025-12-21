@@ -2,11 +2,12 @@
 
 #include <string>
 #include <vector>
+#include <unordered_map>
 
 namespace cactus {
 namespace index {
 
-    constexpr uint32_t MAGIC = 0x43415458;
+    constexpr uint32_t MAGIC = 0x43414354;
     constexpr uint32_t VERSION = 1;
 
     struct Document {
@@ -22,7 +23,7 @@ namespace index {
     };
 
     struct SearchOptions {
-        size_t top_k = 10;
+        uint32_t top_k = 10;
         float score_threshold = 0.0f;
     };
 
@@ -46,7 +47,7 @@ namespace index {
             struct IndexEntry {
                 uint64_t data_offset;
                 uint32_t data_size;
-                uint32_t flags; // bit 0: tombstone
+                uint8_t flags; // bit 0: tombstone
 
                 const float* embedding() const {
                     return reinterpret_cast<const float*>(this + 1);
@@ -63,9 +64,9 @@ namespace index {
             };
 
             struct DataEntry {
-                uint32_t doc_id_len;
-                uint32_t content_len;
-                uint32_t metadata_len;
+                uint8_t doc_id_len;
+                uint16_t content_len;
+                uint16_t metadata_len;
 
                 const char* doc_id() const {
                     return reinterpret_cast<const char*>(this + 1);
@@ -86,6 +87,11 @@ namespace index {
 
             void parse_index_header();
             void parse_data_header();
+            void build_doc_id_map();
+            void validate_documents(const std::vector<Document>& documents);
+            void validate_doc_ids(const std::vector<std::string>& doc_ids);
+
+            std::unordered_map<std::string, uint32_t> doc_id_map_;
 
             std::string index_path_, data_path_;
             uint32_t embedding_dim_;
