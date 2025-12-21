@@ -26,7 +26,7 @@ namespace index {
         cactus_scalar_op_f16(v, v, dim, x, ScalarOpType::DIVIDE);
     }
 
-    Index::Index(const std::string& index_path, const std::string& data_path, uint32_t embedding_dim):
+    Index::Index(const std::string& index_path, const std::string& data_path, size_t embedding_dim):
         index_path_(index_path), data_path_(data_path), embedding_dim_(embedding_dim),
         index_fd_(-1), data_fd_(-1),
         mapped_index_(nullptr), mapped_data_(nullptr) {
@@ -159,7 +159,7 @@ namespace index {
                 throw std::runtime_error("Failed to write index entry");
             }
 
-            doc_id_map_[doc.id] = num_documents_ + i;
+            doc_id_map_[doc.id] = num_documents_ + static_cast<uint32_t>(i);
         }
 
         munmap(mapped_index_, index_file_size_);
@@ -186,7 +186,7 @@ namespace index {
         close(index_fd);
         close(data_fd);
 
-        num_documents_ += documents.size();
+        num_documents_ += static_cast<uint32_t>(documents.size());
         IndexHeader* header = reinterpret_cast<IndexHeader*>(mapped_index_);
         header->num_documents = num_documents_;
     }
@@ -221,9 +221,8 @@ namespace index {
             const IndexEntry& entry = *reinterpret_cast<const IndexEntry*>(entries + i * IndexEntry::size(embedding_dim_));
             const DataEntry* data_entry = reinterpret_cast<const DataEntry*>(data_ptr + entry.data_offset);
 
-            const __fp16* entry_embedding = entry.embedding();
             std::vector<float> embedding_f32(embedding_dim_);
-            cactus_fp16_to_fp32(entry_embedding, embedding_f32.data(), embedding_dim_);
+            cactus_fp16_to_fp32(entry.embedding(), embedding_f32.data(), embedding_dim_);
 
             results.emplace_back(
                 doc_id,
@@ -273,8 +272,9 @@ namespace index {
                     continue;
                 }
 
-                const __fp16* entry_embedding = entry.embedding();
-                float score = static_cast<float>(dot_product(normalized_embedding.data(), entry_embedding, embedding_dim_));
+                float score = static_cast<float>(
+                    dot_product(normalized_embedding.data(), entry.embedding(), embedding_dim_)
+                );
 
                 if (score < options.score_threshold) {
                     continue;
@@ -329,7 +329,7 @@ namespace index {
         header.embedding_dim = *reinterpret_cast<const decltype(header.embedding_dim)*>(index_ptr + offset);
         offset += sizeof(header.embedding_dim);
 
-        if (header.embedding_dim != embedding_dim_) {
+        if (header.embedding_dim != static_cast<uint64_t>(embedding_dim_)) {
             throw std::runtime_error("Embedding dimension mismatch");
         }
 
@@ -364,7 +364,7 @@ namespace index {
         const char* index_ptr = static_cast<const char*>(mapped_index_);
         const char* entries = index_ptr + sizeof(IndexHeader);
 
-        doc_id_map_.reserve(num_documents_);
+        doc_id_map_.reserve(static_cast<size_t>(num_documents_));
 
         for (uint32_t i = 0; i < num_documents_; ++i) {
             const IndexEntry& entry = *reinterpret_cast<const IndexEntry*>(entries + i * IndexEntry::size(embedding_dim_));

@@ -8,7 +8,7 @@
 #include <chrono>
 #include <iomanip>
 
-std::vector<float> random_embedding(uint32_t dim) {
+std::vector<float> random_embedding(size_t dim) {
     static std::mt19937 gen(42);
     static std::uniform_real_distribution<float> dist(-1.0f, 1.0f);
     std::vector<float> embedding(dim);
@@ -18,14 +18,16 @@ std::vector<float> random_embedding(uint32_t dim) {
     return embedding;
 }
 
-void create_test_index(const std::string& index_path, const std::string& data_path, uint32_t embedding_dim, uint32_t num_docs = 0) {
+void create_test_index(const std::string& index_path, const std::string& data_path, size_t embedding_dim, uint32_t num_docs = 0) {
     std::ofstream index_file(index_path, std::ios::binary);
     uint32_t magic = cactus::index::MAGIC;
     uint32_t version = cactus::index::VERSION;
+    uint64_t embedding_dim_64 = static_cast<uint64_t>(embedding_dim);
+    uint64_t num_docs_64 = static_cast<uint64_t>(num_docs);
     index_file.write(reinterpret_cast<const char*>(&magic), sizeof(uint32_t));
     index_file.write(reinterpret_cast<const char*>(&version), sizeof(uint32_t));
-    index_file.write(reinterpret_cast<const char*>(&embedding_dim), sizeof(uint32_t));
-    index_file.write(reinterpret_cast<const char*>(&num_docs), sizeof(uint32_t));
+    index_file.write(reinterpret_cast<const char*>(&embedding_dim_64), sizeof(uint64_t));
+    index_file.write(reinterpret_cast<const char*>(&num_docs_64), sizeof(uint64_t));
     index_file.close();
 
     std::ofstream data_file(data_path, std::ios::binary);
@@ -40,7 +42,7 @@ void cleanup_test_files(const std::string& index_path, const std::string& data_p
 }
 
 template<typename TestFunc>
-bool run_isolated_test(const std::string& test_name, uint32_t embedding_dim, TestFunc test_func) {
+bool run_isolated_test(const std::string& test_name, size_t embedding_dim, TestFunc test_func) {
     const std::string index_path = "/tmp/test_" + test_name + ".idx";
     const std::string data_path = "/tmp/test_" + test_name + ".dat";
 
@@ -66,16 +68,16 @@ bool expect_exception(std::function<void()> func) {
     }
 }
 
-bool test_constructor_basic(uint32_t embedding_dim) {
-    auto test = [](const std::string& index_path, const std::string& data_path, uint32_t dim) {
+bool test_constructor_basic(size_t embedding_dim) {
+    auto test = [](const std::string& index_path, const std::string& data_path, size_t dim) {
         cactus::index::Index index(index_path, data_path, dim);
         return true;
     };
     return run_isolated_test("constructor_basic", embedding_dim, test);
 }
 
-bool test_constructor_missing_index(uint32_t embedding_dim) {
-    auto test = [](const std::string& index_path, const std::string& data_path, uint32_t dim) {
+bool test_constructor_missing_index(size_t embedding_dim) {
+    auto test = [](const std::string& index_path, const std::string& data_path, size_t dim) {
         unlink(index_path.c_str());
         return expect_exception([&]() {
             cactus::index::Index index(index_path, data_path, dim);
@@ -84,8 +86,8 @@ bool test_constructor_missing_index(uint32_t embedding_dim) {
     return run_isolated_test("constructor_missing_index", embedding_dim, test);
 }
 
-bool test_constructor_missing_data(uint32_t embedding_dim) {
-    auto test = [](const std::string& index_path, const std::string& data_path, uint32_t dim) {
+bool test_constructor_missing_data(size_t embedding_dim) {
+    auto test = [](const std::string& index_path, const std::string& data_path, size_t dim) {
         unlink(data_path.c_str());
         return expect_exception([&]() {
             cactus::index::Index index(index_path, data_path, dim);
@@ -94,8 +96,8 @@ bool test_constructor_missing_data(uint32_t embedding_dim) {
     return run_isolated_test("constructor_missing_data", embedding_dim, test);
 }
 
-bool test_constructor_wrong_magic(uint32_t embedding_dim) {
-    auto test = [](const std::string& index_path, const std::string& data_path, uint32_t dim) {
+bool test_constructor_wrong_magic(size_t embedding_dim) {
+    auto test = [](const std::string& index_path, const std::string& data_path, size_t dim) {
         std::ofstream index_file(index_path, std::ios::binary);
         uint32_t wrong_magic = 0xDEADBEEF;
         index_file.write(reinterpret_cast<const char*>(&wrong_magic), sizeof(uint32_t));
@@ -108,7 +110,7 @@ bool test_constructor_wrong_magic(uint32_t embedding_dim) {
     return run_isolated_test("constructor_wrong_magic", embedding_dim, test);
 }
 
-bool test_constructor_dimension_mismatch(uint32_t embedding_dim) {
+bool test_constructor_dimension_mismatch(size_t embedding_dim) {
     auto test = [](const std::string& index_path, const std::string& data_path, uint32_t) {
         return expect_exception([&]() {
             cactus::index::Index index(index_path, data_path, 256);
@@ -117,8 +119,8 @@ bool test_constructor_dimension_mismatch(uint32_t embedding_dim) {
     return run_isolated_test("constructor_dimension_mismatch", embedding_dim, test);
 }
 
-bool test_add_single_document(uint32_t embedding_dim) {
-    auto test = [](const std::string& index_path, const std::string& data_path, uint32_t dim) {
+bool test_add_single_document(size_t embedding_dim) {
+    auto test = [](const std::string& index_path, const std::string& data_path, size_t dim) {
         cactus::index::Index index(index_path, data_path, dim);
 
         std::vector<cactus::index::Document> docs = {
@@ -133,8 +135,8 @@ bool test_add_single_document(uint32_t embedding_dim) {
     return run_isolated_test("add_single_document", embedding_dim, test);
 }
 
-bool test_add_multiple_documents(uint32_t embedding_dim) {
-    auto test = [](const std::string& index_path, const std::string& data_path, uint32_t dim) {
+bool test_add_multiple_documents(size_t embedding_dim) {
+    auto test = [](const std::string& index_path, const std::string& data_path, size_t dim) {
         cactus::index::Index index(index_path, data_path, dim);
 
         std::vector<cactus::index::Document> docs;
@@ -158,8 +160,8 @@ bool test_add_multiple_documents(uint32_t embedding_dim) {
     return run_isolated_test("add_multiple_documents", embedding_dim, test);
 }
 
-bool test_add_empty_documents(uint32_t embedding_dim) {
-    auto test = [](const std::string& index_path, const std::string& data_path, uint32_t dim) {
+bool test_add_empty_documents(size_t embedding_dim) {
+    auto test = [](const std::string& index_path, const std::string& data_path, size_t dim) {
         cactus::index::Index index(index_path, data_path, dim);
         std::vector<cactus::index::Document> docs;
 
@@ -170,8 +172,8 @@ bool test_add_empty_documents(uint32_t embedding_dim) {
     return run_isolated_test("add_empty_documents", embedding_dim, test);
 }
 
-bool test_add_large_content(uint32_t embedding_dim) {
-    auto test = [](const std::string& index_path, const std::string& data_path, uint32_t dim) {
+bool test_add_large_content(size_t embedding_dim) {
+    auto test = [](const std::string& index_path, const std::string& data_path, size_t dim) {
         cactus::index::Index index(index_path, data_path, dim);
 
         std::string large_content(1024 * 1024, 'x');
@@ -186,8 +188,8 @@ bool test_add_large_content(uint32_t embedding_dim) {
     return run_isolated_test("add_large_content", embedding_dim, test);
 }
 
-bool test_delete_single_document(uint32_t embedding_dim) {
-    auto test = [](const std::string& index_path, const std::string& data_path, uint32_t dim) {
+bool test_delete_single_document(size_t embedding_dim) {
+    auto test = [](const std::string& index_path, const std::string& data_path, size_t dim) {
         cactus::index::Index index(index_path, data_path, dim);
 
         std::vector<cactus::index::Document> docs = {
@@ -204,8 +206,8 @@ bool test_delete_single_document(uint32_t embedding_dim) {
     return run_isolated_test("delete_single_document", embedding_dim, test);
 }
 
-bool test_query_basic(uint32_t embedding_dim) {
-    auto test = [](const std::string& index_path, const std::string& data_path, uint32_t dim) {
+bool test_query_basic(size_t embedding_dim) {
+    auto test = [](const std::string& index_path, const std::string& data_path, size_t dim) {
         cactus::index::Index index(index_path, data_path, dim);
 
         auto embedding1 = random_embedding(dim);
@@ -226,8 +228,8 @@ bool test_query_basic(uint32_t embedding_dim) {
     return run_isolated_test("query_basic", embedding_dim, test);
 }
 
-bool test_query_topk(uint32_t embedding_dim) {
-    auto test = [](const std::string& index_path, const std::string& data_path, uint32_t dim) {
+bool test_query_topk(size_t embedding_dim) {
+    auto test = [](const std::string& index_path, const std::string& data_path, size_t dim) {
         cactus::index::Index index(index_path, data_path, dim);
 
         std::vector<cactus::index::Document> docs;
@@ -245,8 +247,8 @@ bool test_query_topk(uint32_t embedding_dim) {
     return run_isolated_test("query_topk", embedding_dim, test);
 }
 
-bool test_stress_many_documents(uint32_t embedding_dim) {
-    auto test = [](const std::string& index_path, const std::string& data_path, uint32_t dim) {
+bool test_stress_many_documents(size_t embedding_dim) {
+    auto test = [](const std::string& index_path, const std::string& data_path, size_t dim) {
         cactus::index::Index index(index_path, data_path, dim);
 
         std::vector<cactus::index::Document> docs;
@@ -267,7 +269,7 @@ bool test_stress_many_documents(uint32_t embedding_dim) {
     return run_isolated_test("stress_many_documents", embedding_dim, test);
 }
 
-void run_benchmarks(uint32_t embedding_dim, uint32_t num_docs) {
+void run_benchmarks(size_t embedding_dim, uint32_t num_docs) {
     std::cout << "\n╔══════════════════════════════════════════╗\n"
               << "║     Index Benchmark Suite                ║\n"
               << "║     Documents: " << std::setw(26) << std::left << num_docs << "║\n"
@@ -416,7 +418,7 @@ void run_benchmarks(uint32_t embedding_dim, uint32_t num_docs) {
 }
 
 int main() {
-    const uint32_t embedding_dim = 1024;
+    const size_t embedding_dim = 1024;
     const uint32_t num_documents = 1000000;
 
     TestUtils::TestRunner runner("Index Tests");

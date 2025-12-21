@@ -23,13 +23,13 @@ namespace index {
     };
 
     struct SearchOptions {
-        uint32_t top_k = 10;
+        size_t top_k = 10;
         float score_threshold = 0.0f;
     };
 
     class Index {
         public:
-            Index(const std::string& index_path, const std::string& data_path, uint32_t embedding_dim);
+            Index(const std::string& index_path, const std::string& data_path, size_t embedding_dim);
             ~Index();
 
             Index(const Index&) = delete;
@@ -46,7 +46,7 @@ namespace index {
             struct IndexHeader {
                 uint32_t magic;
                 uint32_t version;
-                uint32_t embedding_dim;
+                uint64_t embedding_dim;
                 uint32_t num_documents;
             };
 
@@ -60,7 +60,7 @@ namespace index {
                     return reinterpret_cast<const __fp16*>(this + 1);
                 }
 
-                static size_t size(uint32_t embedding_dim) {
+                static size_t size(size_t embedding_dim) {
                     return sizeof(IndexEntry) + embedding_dim * sizeof(__fp16);
                 }
             };
@@ -96,7 +96,7 @@ namespace index {
             std::unordered_map<uint32_t, uint32_t> doc_id_map_;
 
             std::string index_path_, data_path_;
-            uint32_t embedding_dim_;
+            size_t embedding_dim_;
             uint32_t num_documents_;
 
             int index_fd_, data_fd_;
