@@ -4,7 +4,6 @@
 #include <unistd.h>
 #include <sys/stat.h>
 #include <sys/mman.h>
-#include <numeric>
 #include <unordered_set>
 #include <queue>
 #include <limits>
@@ -66,18 +65,13 @@ namespace index {
             cleanup_and_throw("Cannot map file: " + index_path);
         }
 
-        close(index_fd_);
-        index_fd_ = -1;
-
-        mapped_data_ = mmap(nullptr, data_file_size_, PROT_READ, MAP_PRIVATE, data_fd_, 0);
+        mapped_data_ = mmap(nullptr, data_file_size_, PROT_READ | PROT_WRITE, MAP_SHARED, data_fd_, 0);
         if (mapped_data_ == MAP_FAILED) {
             munmap(mapped_index_, index_file_size_);
+            close(index_fd_);
             close(data_fd_);
             throw std::runtime_error("Cannot map file: " + data_path);
         }
-
-        close(data_fd_);
-        data_fd_ = -1;
 
         parse_index_header();
         parse_data_header();
@@ -105,105 +99,86 @@ namespace index {
     void Index::add_documents(const std::vector<Document>& documents) {
         validate_documents(documents);
 
-        int index_fd = open(index_path_.c_str(), O_RDWR);
-        if (index_fd < 0) {
-            throw std::runtime_error("Cannot open index file for writing: " + index_path_);
-        }
-
-        int data_fd = open(data_path_.c_str(), O_RDWR);
-        if (data_fd < 0) {
-            close(index_fd);
-            throw std::runtime_error("Cannot open data file for writing: " + data_path_);
-        }
-
-        auto cleanup_and_throw = [&index_fd, &data_fd](const std::string& msg) {
-            close(index_fd);
-            close(data_fd);
-            throw std::runtime_error(msg);
-        };
-
-        off_t data_offset = lseek(data_fd, 0, SEEK_END);
-
-        std::vector<uint64_t> data_offsets;
-        data_offsets.reserve(documents.size());
-
-        std::vector<uint32_t> data_sizes;
-        data_sizes.reserve(documents.size());
-
+        size_t added_data_size = 0;
         for (const auto& doc : documents) {
-            data_offsets.emplace_back(data_offset);
-
-            const DataEntry entry {
-                static_cast<uint16_t>(doc.content.size()),
-                static_cast<uint16_t>(doc.metadata.size())
-            };
-
-            if (write_full(data_fd, &entry, sizeof(DataEntry)) != static_cast<ssize_t>(sizeof(DataEntry))
-                || write_full(data_fd, doc.content.data(), doc.content.size()) != static_cast<ssize_t>(doc.content.size())
-                || write_full(data_fd, doc.metadata.data(), doc.metadata.size()) != static_cast<ssize_t>(doc.metadata.size())) {
-                cleanup_and_throw("Failed to write document entry");
-            }
-
-            uint32_t data_entry_size = sizeof(DataEntry) + doc.content.size() + doc.metadata.size();
-            data_sizes.emplace_back(data_entry_size);
-
-            if (static_cast<off_t>(data_entry_size) > std::numeric_limits<off_t>::max() - data_offset) {
-                cleanup_and_throw("Data offset overflow when adding documents");
-            }
-
-            data_offset += data_entry_size;
+            added_data_size += sizeof(DataEntry) + doc.content.size() + doc.metadata.size();
         }
 
-        lseek(index_fd, 0, SEEK_END);
+        size_t new_index_size = index_file_size_ + documents.size() * index_entry_size_;
+        size_t new_data_size = data_file_size_ + added_data_size;
 
+        if (ftruncate(index_fd_, new_index_size) != 0) {
+            throw std::runtime_error("Failed to resize index file");
+        }
+
+        if (ftruncate(data_fd_, new_data_size) != 0) {
+            throw std::runtime_error("Failed to resize data file");
+        }
+
+        munmap(mapped_index_, index_file_size_);
+        munmap(mapped_data_, data_file_size_);
+
+        mapped_index_ = mmap(nullptr, new_index_size, PROT_READ | PROT_WRITE, MAP_SHARED, index_fd_, 0);
+        if (mapped_index_ == MAP_FAILED) {
+            throw std::runtime_error("Failed to remap index file");
+        }
+
+        mapped_data_ = mmap(nullptr, new_data_size, PROT_READ | PROT_WRITE, MAP_SHARED, data_fd_, 0);
+        if (mapped_data_ == MAP_FAILED) {
+            munmap(mapped_index_, new_index_size);
+            throw std::runtime_error("Failed to remap data file");
+        }
+
+        size_t old_index_size = index_file_size_;
+        size_t old_data_size = data_file_size_;
+
+        index_file_size_ = new_index_size;
+        data_file_size_ = new_data_size;
+
+        char* index_write_pos = static_cast<char*>(mapped_index_) + old_index_size;
+        char* data_write_pos = static_cast<char*>(mapped_data_) + old_data_size;
+
+        uint64_t data_offset = old_data_size;
         doc_id_map_.reserve(doc_id_map_.size() + documents.size());
 
         for (size_t i = 0; i < documents.size(); ++i) {
             const auto& doc = documents[i];
 
-            const IndexEntry entry {
-                doc.id,
-                data_offsets[i],
-                data_sizes[i],
-                0
+            DataEntry data_entry{
+                static_cast<uint16_t>(doc.content.size()),
+                static_cast<uint16_t>(doc.metadata.size())
             };
+
+            memcpy(data_write_pos, &data_entry, sizeof(DataEntry));
+            data_write_pos += sizeof(DataEntry);
+            memcpy(data_write_pos, doc.content.data(), doc.content.size());
+            data_write_pos += doc.content.size();
+            memcpy(data_write_pos, doc.metadata.data(), doc.metadata.size());
+            data_write_pos += doc.metadata.size();
+
+            IndexEntry index_entry{doc.id, data_offset, 0};
+            memcpy(index_write_pos, &index_entry, sizeof(IndexEntry));
+            index_write_pos += sizeof(IndexEntry);
 
             std::vector<__fp16> normalized_embedding(embedding_dim_);
             cactus_fp32_to_fp16(doc.embedding.data(), normalized_embedding.data(), embedding_dim_);
             normalize(normalized_embedding.data(), embedding_dim_);
 
             size_t embedding_bytes = embedding_dim_ * sizeof(__fp16);
-            if (write_full(index_fd, &entry, sizeof(IndexEntry)) != static_cast<ssize_t>(sizeof(IndexEntry))
-                || write_full(index_fd, normalized_embedding.data(), embedding_bytes) != static_cast<ssize_t>(embedding_bytes)) {
-                cleanup_and_throw("Failed to write index entry");
-            }
+            memcpy(index_write_pos, normalized_embedding.data(), embedding_bytes);
+            index_write_pos += embedding_bytes;
 
             doc_id_map_[doc.id] = num_documents_ + static_cast<uint32_t>(i);
+            data_offset += sizeof(DataEntry) + doc.content.size() + doc.metadata.size();
         }
-
-        munmap(mapped_index_, index_file_size_);
-        munmap(mapped_data_, data_file_size_);
-
-        index_file_size_ += documents.size() * index_entry_size_;
-        data_file_size_ += std::accumulate(data_sizes.begin(), data_sizes.end(), size_t{0});
-
-        mapped_index_ = mmap(nullptr, index_file_size_, PROT_READ | PROT_WRITE, MAP_SHARED, index_fd, 0);
-        if (mapped_index_ == MAP_FAILED) {
-            cleanup_and_throw("Failed to remap index file");
-        }
-
-        mapped_data_ = mmap(nullptr, data_file_size_, PROT_READ, MAP_PRIVATE, data_fd, 0);
-        if (mapped_data_ == MAP_FAILED) {
-            munmap(mapped_index_, index_file_size_);
-            cleanup_and_throw("Failed to remap data file");
-        }
-
-        close(index_fd);
-        close(data_fd);
 
         num_documents_ += static_cast<uint32_t>(documents.size());
         IndexHeader* header = reinterpret_cast<IndexHeader*>(mapped_index_);
         header->num_documents = num_documents_;
+
+        if (msync(mapped_data_, data_file_size_, MS_SYNC) != 0) {
+            throw std::runtime_error("Failed to sync data file to disk");
+        }
 
         if (msync(mapped_index_, index_file_size_, MS_SYNC) != 0) {
             throw std::runtime_error("Failed to sync index file to disk");
@@ -287,6 +262,10 @@ namespace index {
             return {};
         }
 
+        if (options.top_k == 0) {
+            return std::vector<std::vector<SearchResult>>(embeddings.size());
+        }
+
         if (num_documents_ > 0) {
             size_t last_entry_offset = (num_documents_ - 1) * index_entry_size_;
             if (sizeof(IndexHeader) + last_entry_offset + index_entry_size_ > index_file_size_) {
@@ -359,6 +338,41 @@ namespace index {
         std::string temp_index_path = index_path_ + ".tmp";
         std::string temp_data_path = data_path_ + ".tmp";
 
+        const char* index_ptr = static_cast<const char*>(mapped_index_);
+        const char* entries = index_ptr + sizeof(IndexHeader);
+        const char* data_ptr = static_cast<const char*>(mapped_data_);
+
+        uint32_t compacted_count = static_cast<uint32_t>(doc_id_map_.size());
+
+        if (num_documents_ > 0) {
+            size_t last_entry_offset = (num_documents_ - 1) * index_entry_size_;
+            if (sizeof(IndexHeader) + last_entry_offset + index_entry_size_ > index_file_size_) {
+                throw std::runtime_error("Compaction failed: File corrupted: index entry extends beyond file size");
+            }
+        }
+
+        off_t new_data_offset = sizeof(DataHeader);
+        size_t new_data_size = sizeof(DataHeader);
+
+        for (const auto& [doc_id, index] : doc_id_map_) {
+            const IndexEntry& entry = *reinterpret_cast<const IndexEntry*>(entries + index * index_entry_size_);
+
+            if (static_cast<size_t>(entry.data_offset) + sizeof(DataEntry) > data_file_size_) {
+                throw std::runtime_error("Compaction failed: File corrupted: data entry extends beyond file size");
+            }
+
+            const DataEntry* data_entry = reinterpret_cast<const DataEntry*>(data_ptr + entry.data_offset);
+            uint32_t data_entry_size = sizeof(DataEntry) + data_entry->content_len + data_entry->metadata_len;
+
+            if (static_cast<size_t>(entry.data_offset) + data_entry_size > data_file_size_) {
+                throw std::runtime_error("Compaction failed: File corrupted: data entry extends beyond file size");
+            }
+
+            new_data_size += data_entry_size;
+        }
+
+        size_t new_index_size = sizeof(IndexHeader) + compacted_count * index_entry_size_;
+
         int temp_index_fd = open(temp_index_path.c_str(), O_RDWR | O_CREAT | O_TRUNC, 0644);
         if (temp_index_fd < 0) {
             throw std::runtime_error("Cannot create temporary index file: " + temp_index_path);
@@ -371,11 +385,32 @@ namespace index {
             throw std::runtime_error("Cannot create temporary data file: " + temp_data_path);
         }
 
-        const char* index_ptr = static_cast<const char*>(mapped_index_);
-        const char* entries = index_ptr + sizeof(IndexHeader);
-        const char* data_ptr = static_cast<const char*>(mapped_data_);
+        auto cleanup_and_throw = [&temp_index_fd, &temp_data_fd, &temp_index_path, &temp_data_path](const std::string& msg) {
+            close(temp_index_fd);
+            close(temp_data_fd);
+            unlink(temp_index_path.c_str());
+            unlink(temp_data_path.c_str());
+            throw std::runtime_error(msg);
+        };
 
-        uint32_t compacted_count = static_cast<uint32_t>(doc_id_map_.size());
+        if (ftruncate(temp_index_fd, new_index_size) != 0) {
+            cleanup_and_throw("Failed to resize temporary index file");
+        }
+
+        if (ftruncate(temp_data_fd, new_data_size) != 0) {
+            cleanup_and_throw("Failed to resize temporary data file");
+        }
+
+        void* temp_index_map = mmap(nullptr, new_index_size, PROT_READ | PROT_WRITE, MAP_SHARED, temp_index_fd, 0);
+        if (temp_index_map == MAP_FAILED) {
+            cleanup_and_throw("Cannot map temporary index file");
+        }
+
+        void* temp_data_map = mmap(nullptr, new_data_size, PROT_READ | PROT_WRITE, MAP_SHARED, temp_data_fd, 0);
+        if (temp_data_map == MAP_FAILED) {
+            munmap(temp_index_map, new_index_size);
+            cleanup_and_throw("Cannot map temporary data file");
+        }
 
         IndexHeader new_header = {
             MAGIC,
@@ -389,94 +424,117 @@ namespace index {
             VERSION
         };
 
-        auto cleanup_and_throw = [&temp_index_fd, &temp_data_fd, &temp_index_path, &temp_data_path](const std::string& msg) {
-            close(temp_index_fd);
-            close(temp_data_fd);
-            unlink(temp_index_path.c_str());
-            unlink(temp_data_path.c_str());
-            throw std::runtime_error(msg);
-        };
+        memcpy(temp_index_map, &new_header, sizeof(IndexHeader));
+        memcpy(temp_data_map, &new_data_header, sizeof(DataHeader));
 
-        if (write_full(temp_data_fd, &new_data_header, sizeof(DataHeader)) != static_cast<ssize_t>(sizeof(DataHeader))
-            || write_full(temp_index_fd, &new_header, sizeof(IndexHeader)) != static_cast<ssize_t>(sizeof(IndexHeader))) {
-            cleanup_and_throw("Failed to write headers to temporary files");
-        }
+        char* temp_index_ptr = static_cast<char*>(temp_index_map);
+        char* temp_data_ptr = static_cast<char*>(temp_data_map);
+        char* index_write_pos = temp_index_ptr + sizeof(IndexHeader);
+        char* data_write_pos = temp_data_ptr + sizeof(DataHeader);
 
-        if (num_documents_ > 0) {
-            size_t last_entry_offset = (num_documents_ - 1) * index_entry_size_;
-            if (sizeof(IndexHeader) + last_entry_offset + index_entry_size_ > index_file_size_) {
-                cleanup_and_throw("Compaction failed: File corrupted: index entry extends beyond file size");
-            }
-        }
-
-        off_t new_data_offset = sizeof(DataHeader);
         std::unordered_map<int, uint32_t> new_doc_id_map;
         new_doc_id_map.reserve(compacted_count);
 
         uint32_t new_index = 0;
+        new_data_offset = sizeof(DataHeader);
+
         for (const auto& [doc_id, index] : doc_id_map_) {
             const IndexEntry& entry = *reinterpret_cast<const IndexEntry*>(entries + index * index_entry_size_);
-
-            if (static_cast<size_t>(entry.data_offset) + sizeof(DataEntry) > data_file_size_) {
-                cleanup_and_throw("Compaction failed: File corrupted: data entry extends beyond file size");
-            }
-
             const DataEntry* data_entry = reinterpret_cast<const DataEntry*>(data_ptr + entry.data_offset);
             uint32_t data_entry_size = sizeof(DataEntry) + data_entry->content_len + data_entry->metadata_len;
 
-            if (static_cast<size_t>(entry.data_offset) + data_entry_size > data_file_size_) {
-                cleanup_and_throw("Compaction failed: File corrupted: data entry extends beyond file size");
-            }
+            memcpy(data_write_pos, data_entry, data_entry_size);
+            data_write_pos += data_entry_size;
 
-            IndexEntry new_entry = {
-                entry.doc_id,
-                static_cast<uint64_t>(new_data_offset),
-                data_entry_size,
-                0
-            };
+            IndexEntry new_entry = {entry.doc_id, static_cast<uint64_t>(new_data_offset), 0};
+
+            memcpy(index_write_pos, &new_entry, sizeof(IndexEntry));
+            index_write_pos += sizeof(IndexEntry);
 
             size_t embedding_bytes = embedding_dim_ * sizeof(__fp16);
-            if (write_full(temp_data_fd, data_entry, data_entry_size) != static_cast<ssize_t>(data_entry_size)
-                || write_full(temp_index_fd, &new_entry, sizeof(IndexEntry)) != static_cast<ssize_t>(sizeof(IndexEntry))
-                || write_full(temp_index_fd, entry.embedding(), embedding_bytes) != static_cast<ssize_t>(embedding_bytes)) {
-                cleanup_and_throw("Failed to write data entry during compaction");
-            }
+            memcpy(index_write_pos, entry.embedding(), embedding_bytes);
+            index_write_pos += embedding_bytes;
 
             new_doc_id_map[doc_id] = new_index;
             ++new_index;
 
             if (static_cast<off_t>(data_entry_size) > std::numeric_limits<off_t>::max() - new_data_offset) {
+                munmap(temp_index_map, new_index_size);
+                munmap(temp_data_map, new_data_size);
                 cleanup_and_throw("Data offset overflow during compaction");
             }
             new_data_offset += data_entry_size;
         }
 
-        if (fsync(temp_index_fd) != 0 || fsync(temp_data_fd) != 0) {
-            cleanup_and_throw("Failed to sync temporary files");
+        if (msync(temp_data_map, new_data_size, MS_SYNC) != 0) {
+            munmap(temp_index_map, new_index_size);
+            munmap(temp_data_map, new_data_size);
+            cleanup_and_throw("Failed to sync temporary data file");
         }
 
+        if (msync(temp_index_map, new_index_size, MS_SYNC) != 0) {
+            munmap(temp_index_map, new_index_size);
+            munmap(temp_data_map, new_data_size);
+            cleanup_and_throw("Failed to sync temporary index file");
+        }
+
+        munmap(temp_index_map, new_index_size);
+        munmap(temp_data_map, new_data_size);
         close(temp_index_fd);
         close(temp_data_fd);
 
         munmap(mapped_index_, index_file_size_);
         munmap(mapped_data_, data_file_size_);
+        close(index_fd_);
+        close(data_fd_);
 
-        std::string backup_index_path = index_path_ + ".backup";
-        std::string backup_data_path = data_path_ + ".backup";
+        std::string backup_index = index_path_ + ".backup";
+        std::string backup_data = data_path_ + ".backup";
 
-        if (rename(index_path_.c_str(), backup_index_path.c_str()) != 0
-            || rename(data_path_.c_str(), backup_data_path.c_str()) != 0
-            || rename(temp_index_path.c_str(), index_path_.c_str()) != 0
-            || rename(temp_data_path.c_str(), data_path_.c_str()) != 0) {
-            rename(backup_index_path.c_str(), index_path_.c_str());
-            rename(backup_data_path.c_str(), data_path_.c_str());
-            unlink(temp_index_path.c_str());
-            unlink(temp_data_path.c_str());
-            throw std::runtime_error("Failed to replace files during compaction");
+        if (access(backup_index.c_str(), F_OK) == 0 || access(backup_data.c_str(), F_OK) == 0) {
+            cleanup_and_throw("Backup files already exist, previous compaction may have failed");
         }
 
-        unlink(backup_index_path.c_str());
-        unlink(backup_data_path.c_str());
+        if (rename(index_path_.c_str(), backup_index.c_str()) != 0) {
+            cleanup_and_throw("Failed to backup index file");
+        }
+        if (rename(data_path_.c_str(), backup_data.c_str()) != 0) {
+            rename(backup_index.c_str(), index_path_.c_str());
+            cleanup_and_throw("Failed to backup data file");
+        }
+
+        if (rename(temp_data_path.c_str(), data_path_.c_str()) != 0) {
+            rename(backup_data.c_str(), data_path_.c_str());
+            rename(backup_index.c_str(), index_path_.c_str());
+            cleanup_and_throw("Failed to rename data file");
+        }
+
+        if (rename(temp_index_path.c_str(), index_path_.c_str()) != 0) {
+            unlink(data_path_.c_str());
+            rename(backup_data.c_str(), data_path_.c_str());
+            rename(backup_index.c_str(), index_path_.c_str());
+            cleanup_and_throw("Failed to rename index file");
+        }
+
+        auto sync_dir = [](const std::string& file_path) {
+            size_t last_slash = file_path.rfind('/');
+            std::string dir_path = (last_slash != std::string::npos) ? file_path.substr(0, last_slash) : ".";
+            int dir_fd = open(dir_path.c_str(), O_RDONLY);
+            if (dir_fd < 0) {
+                throw std::runtime_error("Cannot open directory for fsync: " + dir_path);
+            }
+            if (fsync(dir_fd) != 0) {
+                close(dir_fd);
+                throw std::runtime_error("Failed to fsync directory: " + dir_path);
+            }
+            close(dir_fd);
+        };
+
+        sync_dir(index_path_);
+        sync_dir(data_path_);
+
+        unlink(backup_index.c_str());
+        unlink(backup_data.c_str());
 
         int new_index_fd = open(index_path_.c_str(), O_RDWR);
         if (new_index_fd < 0) {
@@ -511,16 +569,16 @@ namespace index {
             cleanup_fds("Cannot map file: " + index_path_);
         }
 
-        close(new_index_fd);
-
-        mapped_data_ = mmap(nullptr, data_file_size_, PROT_READ, MAP_PRIVATE, new_data_fd, 0);
+        mapped_data_ = mmap(nullptr, data_file_size_, PROT_READ | PROT_WRITE, MAP_SHARED, new_data_fd, 0);
         if (mapped_data_ == MAP_FAILED) {
             munmap(mapped_index_, index_file_size_);
+            close(new_index_fd);
             close(new_data_fd);
             throw std::runtime_error("Cannot map file: " + data_path_);
         }
 
-        close(new_data_fd);
+        index_fd_ = new_index_fd;
+        data_fd_ = new_data_fd;
 
         num_documents_ = compacted_count;
         doc_id_map_ = std::move(new_doc_id_map);

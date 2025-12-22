@@ -24,7 +24,7 @@ namespace index {
 
     struct SearchOptions {
         size_t top_k = 10;
-        float score_threshold = 0.0f;
+        float score_threshold = -1.0f;
     };
 
     class Index {
@@ -54,7 +54,6 @@ namespace index {
             struct IndexEntry {
                 int32_t doc_id;
                 uint64_t data_offset;
-                uint32_t data_size;
                 uint8_t flags; // bit 0: tombstone
 
                 const __fp16* embedding() const {
