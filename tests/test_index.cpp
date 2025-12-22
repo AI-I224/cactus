@@ -453,7 +453,7 @@ bool test_compact_query_after() {
     index.delete_documents({2});
     index.compact();
 
-    cactus::index::SearchOptions options;
+    cactus::index::QueryOptions options;
     options.top_k = 2;
 
     auto res = index.query({embedding1}, options);
@@ -548,7 +548,7 @@ bool test_query_similarity() {
     };
     index.add_documents(docs);
 
-    cactus::index::SearchOptions options;
+    cactus::index::QueryOptions options;
     options.top_k = 1;
 
     auto res = index.query({embedding1}, options);
@@ -570,7 +570,7 @@ bool test_query_topk() {
     }
     index.add_documents(docs);
 
-    cactus::index::SearchOptions options;
+    cactus::index::QueryOptions options;
     options.top_k = 5;
 
     auto res = index.query({random_embedding(1024)}, options);
@@ -766,7 +766,7 @@ bool test_query_batch() {
         queries.push_back(random_embedding(1024));
     }
 
-    cactus::index::SearchOptions options;
+    cactus::index::QueryOptions options;
     options.top_k = 3;
 
     auto res = index.query(queries, options);
@@ -1064,7 +1064,7 @@ bool test_edge_query_empty_index() {
 
     cactus::index::Index index(index_path, data_path, 1024);
 
-    cactus::index::SearchOptions options;
+    cactus::index::QueryOptions options;
     options.top_k = 10;
 
     auto res = index.query({random_embedding(1024)}, options);
@@ -1414,7 +1414,7 @@ void run_benchmarks(size_t embedding_dim, uint32_t num_docs) {
     std::cout << "└─ Time: " << std::fixed << std::setprecision(6) << add_duration << "ms\n";
 
     std::cout << "\n[BENCHMARK: Query - Similarity search]\n";
-    cactus::index::SearchOptions options;
+    cactus::index::QueryOptions options;
     options.top_k = 10;
     auto query_embedding = random_embedding(embedding_dim);
 

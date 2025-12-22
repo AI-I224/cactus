@@ -299,13 +299,13 @@ namespace index {
         return results;
     }
 
-    std::vector<std::vector<SearchResult>> Index::query(const std::vector<std::vector<float>>& embeddings, const SearchOptions& options) {
+    std::vector<std::vector<QueryResult>> Index::query(const std::vector<std::vector<float>>& embeddings, const QueryOptions& options) {
         if (embeddings.empty()) {
             return {};
         }
 
         if (options.top_k == 0) {
-            return std::vector<std::vector<SearchResult>>(embeddings.size());
+            return std::vector<std::vector<QueryResult>>(embeddings.size());
         }
 
         if (num_documents_ > 0) {
@@ -325,18 +325,18 @@ namespace index {
             normalized_embeddings.emplace_back(std::move(normalized_embedding));
         }
 
-        std::vector<std::vector<SearchResult>> all_results;
+        std::vector<std::vector<QueryResult>> all_results;
         all_results.reserve(embeddings.size());
 
         const char* index_ptr = static_cast<const char*>(mapped_index_);
         const char* entries = index_ptr + sizeof(IndexHeader);
 
-        auto cmp = [](const SearchResult& a, const SearchResult& b) {
+        auto cmp = [](const QueryResult& a, const QueryResult& b) {
             return a.score > b.score;
         };
 
         for (const auto& normalized_embedding : normalized_embeddings) {
-            std::priority_queue<SearchResult, std::vector<SearchResult>, decltype(cmp)> top_results(cmp);
+            std::priority_queue<QueryResult, std::vector<QueryResult>, decltype(cmp)> top_results(cmp);
 
             for (uint32_t i = 0; i < num_documents_; ++i) {
                 const IndexEntry& entry = *reinterpret_cast<const IndexEntry*>(entries + i * index_entry_size_);
@@ -361,7 +361,7 @@ namespace index {
                 }
             }
 
-            std::vector<SearchResult> results;
+            std::vector<QueryResult> results;
             results.reserve(top_results.size());
 
             while(!top_results.empty()) {

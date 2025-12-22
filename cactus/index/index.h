@@ -17,12 +17,12 @@ namespace index {
         std::string metadata;
     };
 
-    struct SearchResult {
+    struct QueryResult {
         int doc_id;
         float score;
     };
 
-    struct SearchOptions {
+    struct QueryOptions {
         size_t top_k = 10;
         float score_threshold = -1.0f;
     };
@@ -40,7 +40,7 @@ namespace index {
             void add_documents(const std::vector<Document>& documents);
             void delete_documents(const std::vector<int>& doc_ids);
             std::vector<Document> get_documents(const std::vector<int>& doc_ids);
-            std::vector<std::vector<SearchResult>> query(const std::vector<std::vector<float>>& embeddings, const SearchOptions& options);
+            std::vector<std::vector<QueryResult>> query(const std::vector<std::vector<float>>& embeddings, const QueryOptions& options);
             void compact();
 
         private:
