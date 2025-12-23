@@ -4,11 +4,11 @@ The Cactus Index provides a clean C FFI (Foreign Function Interface) for integra
 
 ## Getting Started
 
-The index stores documents with embeddings in memory-mapped files for efficient similarity search:
+The index uses memory-mapped files:
 - `index.bin`: Embeddings (FP16) and metadata pointers
-- `data.bin`: Document content and metadata (UTF-8 strings)
+- `data.bin`: Document content and metadata (UTF-8)
 
-All embeddings are automatically normalized to unit length internally. Both document embeddings (at add time) and query embeddings (at query time) are normalized
+All embeddings are automatically normalized to unit length
 
 ## Types
 
@@ -47,7 +47,7 @@ if (!index) {
 ```
 
 ### `cactus_index_add`
-Adds documents to the index in batches.
+Adds documents to the index.
 
 ```c
 int cactus_index_add(
@@ -112,7 +112,7 @@ int result = cactus_index_add(index, ids, docs, NULL, embeddings, 2, 768);
 ```
 
 ### `cactus_index_delete`
-Marks documents as deleted (soft delete). Space reclaimed via `cactus_index_compact`.
+Soft deletes documents. Space reclaimed via `cactus_index_compact`.
 
 ```c
 int cactus_index_delete(
@@ -139,7 +139,7 @@ if (result != 0) {
 ```
 
 ### `cactus_index_get`
-Retrieves documents by IDs. Allows flexible retrieval - you can fetch only the fields you need.
+Retrieves documents by IDs. Fetch only the fields you need by passing NULL for unused buffers.
 
 ```c
 int cactus_index_get(
@@ -164,17 +164,15 @@ int cactus_index_get(
   - **Input**: Initial capacity of each buffer in bytes
   - **Output**: Actual size of data written to each buffer (including null terminator)
 - `metadata_buffers`: Array of pre-allocated buffers for metadata (optional, can be NULL)
-- `metadata_buffer_sizes`: Array for metadata buffer sizes (required if `metadata_buffers` is not NULL)
+- `metadata_buffer_sizes`: Array serving dual purpose (required if `metadata_buffers` is not NULL):
+  - **Input**: Initial capacity of each buffer in bytes
+  - **Output**: Actual size of data written to each buffer (including null terminator)
 - `embedding_buffers`: Array of pre-allocated buffers for embeddings (optional, can be NULL)
 - `embedding_buffer_sizes`: Array for embedding buffer sizes (required if `embedding_buffers` is not NULL)
   - **Input**: Capacity in number of floats
   - **Output**: Actual number of floats written
 
-**Returns:** 0 on success, -1 on error
-
-**Buffer Requirements:**
-- If a buffer array is provided, its corresponding size array must also be provided
-- If any buffer is too small, the function returns -1 with no data copied
+**Returns:** 0 on success, -1 on error (e.g., buffer too small, no data copied)
 
 **Example - Retrieve all fields:**
 ```c
@@ -206,13 +204,6 @@ if (result == 0) {
         printf("Embedding dim: %zu floats\n", emb_sizes[i]);
     }
 }
-
-// Free buffers
-for (int i = 0; i < 2; i++) {
-    free(docs[i]);
-    free(metas[i]);
-    free(embs[i]);
-}
 ```
 
 **Example - Retrieve only documents (no metadata or embeddings):**
@@ -237,45 +228,10 @@ if (result == 0) {
         printf("%s\n", docs[i]);
     }
 }
-
-for (int i = 0; i < 3; i++) {
-    free(docs[i]);
-}
-```
-
-**Example - Using sizeof() for buffer sizes:**
-```c
-int ids[] = {1};
-
-// Static buffers
-char doc_buffer[65536];
-char meta_buffer[65536];
-float emb_buffer[768];
-
-// Buffer arrays
-char* docs[1] = {doc_buffer};
-char* metas[1] = {meta_buffer};
-float* embs[1] = {emb_buffer};
-
-// Use sizeof() for char buffers (bytes), calculate for float buffers
-size_t doc_sizes[1] = {sizeof(doc_buffer)};   // bytes
-size_t meta_sizes[1] = {sizeof(meta_buffer)}; // bytes
-size_t emb_sizes[1] = {sizeof(emb_buffer) / sizeof(float)};  // number of floats
-
-int result = cactus_index_get(index, ids, 1,
-                               docs, doc_sizes,
-                               metas, meta_sizes,
-                               embs, emb_sizes);
-
-if (result == 0) {
-    printf("Document: %s\n", doc_buffer);
-    printf("Retrieved %zu floats (%zu bytes) of embedding data\n",
-           emb_sizes[0], emb_sizes[0] * sizeof(float));
-}
 ```
 
 ### `cactus_index_query`
-Performs batched similarity search using cosine similarity. Results are sorted by score (highest first).
+Similarity search using cosine similarity. Results sorted by score (highest first).
 
 ```c
 int cactus_index_query(
@@ -314,49 +270,11 @@ int cactus_index_query(
 }
 ```
 
-**Default Options:**
-- `top_k`: 10 (maximum results per query)
-- `score_threshold`: -1.0 (no filtering)
+**Defaults:** `top_k`: 10, `score_threshold`: -1.0 (no filtering)
 
-**Returns:** 0 on success, -1 on error
+**Returns:** 0 on success, -1 on error (if buffers too small, no data copied)
 
-**Buffer Requirements:**
-- Queries are executed first (all similarity computations complete), then buffer sizes are validated
-- If any buffer is too small to hold results, the function returns -1 with no data copied
-- Both `id_buffers` and `score_buffers` must have capacity for at least `top_k` results per query
-
-**Example - Single query:**
-```c
-float query[768] = {0.1, 0.2, 0.3, /* ... */};
-const float* queries[] = {query};
-
-// Allocate result buffers (1 query, max 10 results)
-int* ids[1];
-float* scores[1];
-ids[0] = (int*)malloc(10 * sizeof(int));
-scores[0] = (float*)malloc(10 * sizeof(float));
-
-size_t id_sizes[1] = {10};     // Input: buffer capacity
-size_t score_sizes[1] = {10};  // Input: buffer capacity
-
-const char* options = "{\"top_k\":10,\"score_threshold\":0.5}";
-int result = cactus_index_query(index, queries, 1, 768, options,
-                                 ids, id_sizes,
-                                 scores, score_sizes);
-
-if (result == 0) {
-    printf("Found %zu results for query:\n", id_sizes[0]);  // Output: actual count
-    for (size_t i = 0; i < id_sizes[0]; i++) {
-        printf("  ID: %d, Score: %.3f\n", ids[0][i], scores[0][i]);
-    }
-}
-
-// Free buffers
-free(ids[0]);
-free(scores[0]);
-```
-
-**Example - Batch queries:**
+**Example**
 ```c
 float query1[768] = {/* ... */};
 float query2[768] = {/* ... */};
@@ -384,12 +302,6 @@ if (result == 0) {
             printf("  ID: %d, Score: %.3f\n", ids[q][i], scores[q][i]);
         }
     }
-}
-
-// Free buffers
-for (int i = 0; i < 2; i++) {
-    free(ids[i]);
-    free(scores[i]);
 }
 ```
 
@@ -420,11 +332,9 @@ Releases all resources associated with the index.
 void cactus_index_destroy(cactus_index_t index);
 ```
 
-**Important:** Always call this when done with an index to prevent memory leaks.
+## Examples
 
-## Complete Examples
-
-### Creating and Populating an Index
+### Create and Populate
 ```c
 cactus_index_t index = cactus_index_init("./my_index", 768);
 if (!index) {
@@ -483,9 +393,6 @@ if (result == 0) {
     }
 }
 
-free(ids[0]);
-free(scores[0]);
-
 cactus_index_destroy(index);
 ```
 
@@ -542,20 +449,12 @@ if (query_result == 0) {
 
         printf("Context: %s\n", context);
     }
-
-    // Free buffers
-    for (size_t i = 0; i < num_results; i++) {
-        free(docs[i]);
-    }
 }
-
-free(result_ids[0]);
-free(result_scores[0]);
 
 cactus_index_destroy(index);
 ```
 
-### Deleting Documents and Compacting
+### Delete and Compact
 ```c
 cactus_index_t index = cactus_index_init("./my_index", 768);
 if (!index) return -1;
@@ -575,7 +474,7 @@ if (compact_result == 0) {
 cactus_index_destroy(index);
 ```
 
-### Migrating to a Different Embedding Model
+### Migrate Embedding Model
 ```c
 // Open old index and create new index with different dimensions
 cactus_index_t old_index = cactus_index_init("./old_index", 768);
@@ -633,63 +532,18 @@ if (get_result == 0) {
                      new_emb_ptrs, num_docs, 1536);
 }
 
-// Free buffers
-for (int i = 0; i < num_docs; i++) {
-    free(old_docs[i]);
-    free(old_metas[i]);
-}
-
 cactus_index_destroy(old_index);
 cactus_index_destroy(new_index);
 ```
 
 ## Best Practices
 
-1. **Always Check Return Values**: Most functions return 0 on success, -1 on error
-2. **Buffer Management**:
-   - Allocate enough bytes for document/metadata buffers
-   - Allocate `embedding_dim * sizeof(float)` bytes for embedding buffers
-   - For `cactus_index_get`:
-     - `document_buffer_sizes` and `metadata_buffer_sizes`: capacity/size in bytes
-     - `embedding_buffer_sizes`: capacity/size in number of floats (not bytes)
-   - You can use `sizeof(buffer)` for char buffers, use `sizeof(buffer) / sizeof(float)` for float buffers
-3. **Memory Management**:
-   - Always call `cactus_index_destroy()` when done to prevent memory leaks
-   - Free all buffers you allocate
-4. **Optional Buffers**:
-   - In `cactus_index_get`, you can pass NULL for buffers you don't need
-   - This allows flexible retrieval of only the data you need
-5. **Thread Safety**: Each index instance should be used from a single thread
-6. **Batch Operations**: Add 100-1000 documents per call for best performance
-7. **Error Handling**: Always check return values and use `cactus_get_last_error()` for detailed error messages
-
-## Error Handling
-
-All functions return 0 on success, -1 on error (except init functions which return NULL on error).
-
-Common errors: Invalid path, insufficient buffer, dimension mismatch, duplicate IDs, file I/O errors, NULL parameters
-
-**Example:**
-```c
-cactus_index_t index = cactus_index_init("./index", 768);
-if (!index) {
-    const char* error = cactus_get_last_error();
-    fprintf(stderr, "Error: %s\n", error);
-    return -1;
-}
-
-int ids[] = {1, 2};
-const char* docs[] = {"doc1", "doc2"};
-const char* metas[] = {"{}", "{}"};
-float emb1[768] = {/* ... */};
-float emb2[768] = {/* ... */};
-const float* embs[] = {emb1, emb2};
-
-int result = cactus_index_add(index, ids, docs, metas, embs, 2, 768);
-if (result != 0) {
-    const char* error = cactus_get_last_error();
-    fprintf(stderr, "Add failed: %s\n", error);
-}
-
-cactus_index_destroy(index);
-```
+1. **Return Values**: Check all returns (0 = success, -1 = error)
+2. **Buffers**:
+   - `document_buffer_sizes` and `metadata_buffer_sizes`: bytes
+   - `embedding_buffer_sizes`: number of floats (not bytes)
+   - Pass NULL for unused buffers in `cactus_index_get`
+3. **Memory**: Always call `cactus_index_destroy()` when done
+4. **Thread Safety**: One index instance per thread
+5. **Batching**: Add 100-1000 documents per call for best performance
+6. **Errors**: Use `cactus_get_last_error()` for error details
