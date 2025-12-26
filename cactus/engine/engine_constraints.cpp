@@ -21,7 +21,6 @@ void ToolCallConstrainer::tokenize_grammar_elements() {
     close_brace_tokens_.clear();
     colon_tokens_.clear();
     comma_tokens_.clear();
-    fc_key_tokens_.clear();
     name_key_tokens_.clear();
     args_key_tokens_.clear();
     quote_tokens_.clear();
@@ -90,14 +89,17 @@ void ToolCallConstrainer::tokenize_grammar_elements() {
             }
         }
     } else {
+        qwen_tool_call_start_tokens_.clear();
+        qwen_tool_call_end_tokens_.clear();
+
+        add_tokens_for_string("<tool_call>", qwen_tool_call_start_tokens_);
+        add_tokens_for_string("</tool_call>", qwen_tool_call_end_tokens_);
+
         add_tokens_for_string("{", open_brace_tokens_);
         add_tokens_for_string("}", close_brace_tokens_);
         add_tokens_for_string(":", colon_tokens_);
         add_tokens_for_string(",", comma_tokens_);
         add_tokens_for_string("\"", quote_tokens_);
-
-        add_tokens_for_string("\"function_call\"", fc_key_tokens_);
-        add_tokens_for_string("function_call", fc_key_tokens_);
 
         add_tokens_for_string("\"name\"", name_key_tokens_);
         add_tokens_for_string("name", name_key_tokens_);
@@ -135,7 +137,7 @@ void ToolCallConstrainer::init(Config::ModelType model_type,
     } else if (model_type_ == Config::ModelType::GEMMA) {
         state_ = State::GEMMA_START;
     } else {
-        state_ = State::START;
+        state_ = State::QWEN_START;
     }
 
     if (!active_) {
@@ -267,106 +269,92 @@ void ToolCallConstrainer::update(uint32_t /*token_id*/, const std::string& decod
         }
     } else {
         switch (state_) {
-            case State::START:
+            case State::QWEN_START:
+                if (generated_text_.find("<tool_call>") != std::string::npos) {
+                    state_ = State::QWEN_EXPECT_OPEN_BRACE;
+                    generated_text_.clear();
+                }
+                break;
+
+            case State::QWEN_EXPECT_OPEN_BRACE:
                 if (generated_text_.find("{") != std::string::npos) {
-                    state_ = State::EXPECT_FC_KEY;
+                    state_ = State::QWEN_EXPECT_NAME_KEY;
                     generated_text_.clear();
                 }
                 break;
 
-            case State::EXPECT_FC_KEY:
-                if (generated_text_.find("function_call") != std::string::npos) {
-                    state_ = State::EXPECT_FC_COLON;
-                    generated_text_.clear();
-                }
-                break;
-
-            case State::EXPECT_FC_COLON:
-                if (generated_text_.find(":") != std::string::npos) {
-                    state_ = State::EXPECT_FC_OPEN_BRACE;
-                    generated_text_.clear();
-                }
-                break;
-
-            case State::EXPECT_FC_OPEN_BRACE:
-                if (generated_text_.find("{") != std::string::npos) {
-                    state_ = State::EXPECT_NAME_KEY;
-                    generated_text_.clear();
-                }
-                break;
-
-            case State::EXPECT_NAME_KEY:
+            case State::QWEN_EXPECT_NAME_KEY:
                 if (generated_text_.find("name") != std::string::npos) {
-                    state_ = State::EXPECT_NAME_COLON;
+                    state_ = State::QWEN_EXPECT_NAME_COLON;
                     generated_text_.clear();
                 }
                 break;
 
-            case State::EXPECT_NAME_COLON:
+            case State::QWEN_EXPECT_NAME_COLON:
                 if (generated_text_.find(":") != std::string::npos) {
-                    state_ = State::EXPECT_NAME_VALUE;
+                    state_ = State::QWEN_EXPECT_NAME_VALUE;
                     generated_text_.clear();
                 }
                 break;
 
-            case State::EXPECT_NAME_VALUE:
+            case State::QWEN_EXPECT_NAME_VALUE:
                 for (const auto& name : function_names_) {
                     if (generated_text_.find(name) != std::string::npos) {
-                        state_ = State::EXPECT_COMMA;
+                        state_ = State::QWEN_EXPECT_COMMA;
                         generated_text_.clear();
                         break;
                     }
                 }
                 break;
 
-            case State::EXPECT_COMMA:
+            case State::QWEN_EXPECT_COMMA:
                 if (generated_text_.find(",") != std::string::npos) {
-                    state_ = State::EXPECT_ARGS_KEY;
+                    state_ = State::QWEN_EXPECT_ARGS_KEY;
                     generated_text_.clear();
                 } else if (generated_text_.find("}") != std::string::npos) {
-                    state_ = State::EXPECT_OUTER_CLOSE;
+                    state_ = State::QWEN_EXPECT_END;
                     generated_text_.clear();
                 }
                 break;
 
-            case State::EXPECT_ARGS_KEY:
+            case State::QWEN_EXPECT_ARGS_KEY:
                 if (generated_text_.find("arguments") != std::string::npos) {
-                    state_ = State::EXPECT_ARGS_COLON;
+                    state_ = State::QWEN_EXPECT_ARGS_COLON;
                     generated_text_.clear();
                 }
                 break;
 
-            case State::EXPECT_ARGS_COLON:
+            case State::QWEN_EXPECT_ARGS_COLON:
                 if (generated_text_.find(":") != std::string::npos) {
-                    state_ = State::IN_ARGUMENTS;
+                    state_ = State::QWEN_IN_ARGUMENTS;
                     brace_depth_ = 0;
                     generated_text_.clear();
                 }
                 break;
 
-            case State::IN_ARGUMENTS:
+            case State::QWEN_IN_ARGUMENTS:
                 for (char c : decoded_text) {
                     if (c == '{') brace_depth_++;
                     else if (c == '}') {
                         if (brace_depth_ > 0) {
                             brace_depth_--;
                         } else {
-                            state_ = State::EXPECT_OUTER_CLOSE;
+                            state_ = State::QWEN_EXPECT_CLOSE_BRACE;
                             break;
                         }
                     }
                 }
                 break;
 
-            case State::EXPECT_INNER_CLOSE:
+            case State::QWEN_EXPECT_CLOSE_BRACE:
                 if (generated_text_.find("}") != std::string::npos) {
-                    state_ = State::EXPECT_OUTER_CLOSE;
+                    state_ = State::QWEN_EXPECT_END;
                     generated_text_.clear();
                 }
                 break;
 
-            case State::EXPECT_OUTER_CLOSE:
-                if (generated_text_.find("}") != std::string::npos) {
+            case State::QWEN_EXPECT_END:
+                if (generated_text_.find("</tool_call>") != std::string::npos) {
                     state_ = State::DONE;
                     generated_text_.clear();
                 }
@@ -404,7 +392,6 @@ void ToolCallConstrainer::compute_bias() {
                 break;
 
             case State::LFM_EXPECT_BRACKET:
-                // Force [, block everything else structural
                 for (uint32_t t : bracket_open_tokens_) {
                     current_bias_[t] = FORCE_BIAS;
                 }
@@ -417,7 +404,6 @@ void ToolCallConstrainer::compute_bias() {
                 break;
 
             case State::LFM_IN_FUNC_NAME:
-                // Force function name tokens, block structural tokens
                 for (uint32_t t : all_func_name_tokens_) {
                     current_bias_[t] = FORCE_BIAS;
                 }
@@ -433,7 +419,6 @@ void ToolCallConstrainer::compute_bias() {
                 break;
 
             case State::LFM_EXPECT_PAREN:
-                // Force (, block other structural tokens
                 for (uint32_t t : paren_open_tokens_) {
                     current_bias_[t] = FORCE_BIAS;
                 }
@@ -582,40 +567,28 @@ void ToolCallConstrainer::compute_bias() {
         }
     } else {
         switch (state_) {
-            case State::START:
+            case State::QWEN_START:
+                for (uint32_t t : qwen_tool_call_start_tokens_) {
+                    current_bias_[t] = FORCE_BIAS;
+                }
                 for (uint32_t t : open_brace_tokens_) {
-                    current_bias_[t] = FORCE_BIAS;
-                }
-                break;
-
-            case State::EXPECT_FC_KEY:
-                for (uint32_t t : fc_key_tokens_) {
-                    current_bias_[t] = FORCE_BIAS;
-                }
-                for (uint32_t t : quote_tokens_) {
-                    current_bias_[t] = 5.0f;
-                }
-                break;
-
-            case State::EXPECT_FC_COLON:
-                for (uint32_t t : colon_tokens_) {
-                    current_bias_[t] = FORCE_BIAS;
-                }
-                break;
-
-            case State::EXPECT_FC_OPEN_BRACE:
-                for (uint32_t t : open_brace_tokens_) {
-                    current_bias_[t] = FORCE_BIAS;
-                }
-                for (uint32_t t : quote_tokens_) {
                     current_bias_[t] = BLOCK_BIAS;
                 }
-                for (uint32_t t : all_func_name_tokens_) {
+                for (uint32_t t : close_brace_tokens_) {
                     current_bias_[t] = BLOCK_BIAS;
                 }
                 break;
 
-            case State::EXPECT_NAME_KEY:
+            case State::QWEN_EXPECT_OPEN_BRACE:
+                for (uint32_t t : open_brace_tokens_) {
+                    current_bias_[t] = FORCE_BIAS;
+                }
+                for (uint32_t t : qwen_tool_call_end_tokens_) {
+                    current_bias_[t] = BLOCK_BIAS;
+                }
+                break;
+
+            case State::QWEN_EXPECT_NAME_KEY:
                 for (uint32_t t : name_key_tokens_) {
                     current_bias_[t] = FORCE_BIAS;
                 }
@@ -630,14 +603,13 @@ void ToolCallConstrainer::compute_bias() {
                 }
                 break;
 
-            case State::EXPECT_NAME_COLON:
+            case State::QWEN_EXPECT_NAME_COLON:
                 for (uint32_t t : colon_tokens_) {
                     current_bias_[t] = FORCE_BIAS;
                 }
                 break;
 
-            case State::EXPECT_NAME_VALUE:
-                // Strongly bias towards function names
+            case State::QWEN_EXPECT_NAME_VALUE:
                 for (uint32_t t : all_func_name_tokens_) {
                     current_bias_[t] = FORCE_BIAS;
                 }
@@ -646,7 +618,7 @@ void ToolCallConstrainer::compute_bias() {
                 }
                 break;
 
-            case State::EXPECT_COMMA:
+            case State::QWEN_EXPECT_COMMA:
                 for (uint32_t t : comma_tokens_) {
                     current_bias_[t] = FORCE_BIAS;
                 }
@@ -655,7 +627,7 @@ void ToolCallConstrainer::compute_bias() {
                 }
                 break;
 
-            case State::EXPECT_ARGS_KEY:
+            case State::QWEN_EXPECT_ARGS_KEY:
                 for (uint32_t t : args_key_tokens_) {
                     current_bias_[t] = FORCE_BIAS;
                 }
@@ -664,13 +636,13 @@ void ToolCallConstrainer::compute_bias() {
                 }
                 break;
 
-            case State::EXPECT_ARGS_COLON:
+            case State::QWEN_EXPECT_ARGS_COLON:
                 for (uint32_t t : colon_tokens_) {
                     current_bias_[t] = FORCE_BIAS;
                 }
                 break;
 
-            case State::IN_ARGUMENTS:
+            case State::QWEN_IN_ARGUMENTS:
                 for (uint32_t t : open_brace_tokens_) {
                     current_bias_[t] = 3.0f;
                 }
@@ -686,17 +658,26 @@ void ToolCallConstrainer::compute_bias() {
                 for (uint32_t t : quote_tokens_) {
                     current_bias_[t] = 2.0f;
                 }
+                for (uint32_t t : qwen_tool_call_end_tokens_) {
+                    current_bias_[t] = BLOCK_BIAS;
+                }
                 break;
 
-            case State::EXPECT_INNER_CLOSE:
+            case State::QWEN_EXPECT_CLOSE_BRACE:
                 for (uint32_t t : close_brace_tokens_) {
                     current_bias_[t] = FORCE_BIAS;
                 }
                 break;
 
-            case State::EXPECT_OUTER_CLOSE:
-                for (uint32_t t : close_brace_tokens_) {
+            case State::QWEN_EXPECT_END:
+                for (uint32_t t : qwen_tool_call_end_tokens_) {
                     current_bias_[t] = FORCE_BIAS;
+                }
+                for (uint32_t t : open_brace_tokens_) {
+                    current_bias_[t] = BLOCK_BIAS;
+                }
+                for (uint32_t t : qwen_tool_call_start_tokens_) {
+                    current_bias_[t] = BLOCK_BIAS;
                 }
                 break;
 
@@ -716,7 +697,7 @@ void ToolCallConstrainer::reset() {
     } else if (model_type_ == Config::ModelType::GEMMA) {
         state_ = State::GEMMA_START;
     } else {
-        state_ = State::START;
+        state_ = State::QWEN_START;
     }
 
     if (active_) {

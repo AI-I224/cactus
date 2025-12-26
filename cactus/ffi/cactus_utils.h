@@ -313,6 +313,35 @@ inline void parse_function_calls_from_response(const std::string& response_text,
 
     gemma::parse_function_calls(regular_response, function_calls);
 
+    // Parse Qwen-style function calls: <tool_call>{"name": "...", "arguments": {...}}</tool_call>
+    const std::string QWEN_TOOL_START = "<tool_call>";
+    const std::string QWEN_TOOL_END = "</tool_call>";
+    size_t qwen_start_pos = 0;
+
+    while ((qwen_start_pos = regular_response.find(QWEN_TOOL_START, qwen_start_pos)) != std::string::npos) {
+        size_t content_start = qwen_start_pos + QWEN_TOOL_START.length();
+        size_t qwen_end_pos = regular_response.find(QWEN_TOOL_END, content_start);
+
+        if (qwen_end_pos != std::string::npos) {
+            std::string json_content = regular_response.substr(content_start, qwen_end_pos - content_start);
+
+            size_t first = json_content.find_first_not_of(" \t\n\r");
+            size_t last = json_content.find_last_not_of(" \t\n\r");
+            if (first != std::string::npos && last != std::string::npos) {
+                json_content = json_content.substr(first, last - first + 1);
+            }
+
+            if (json_content.size() > 2 && json_content[0] == '{' &&
+                json_content.find("\"name\"") != std::string::npos) {
+                function_calls.push_back(json_content);
+            }
+
+            regular_response.erase(qwen_start_pos, qwen_end_pos + QWEN_TOOL_END.length() - qwen_start_pos);
+        } else {
+            break;
+        }
+    }
+
     // Parse LFM2-style function calls: <|tool_call_start|>[name(args)]<|tool_call_end|>
     const std::string TOOL_CALL_START = "<|tool_call_start|>";
     const std::string TOOL_CALL_END = "<|tool_call_end|>";

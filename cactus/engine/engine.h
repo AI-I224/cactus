@@ -131,9 +131,11 @@ struct MergeRule {
 struct ChatMessage {
     std::string role;
     std::string content;
-    std::string name;  
+    std::string name;
     std::vector<std::string> images;
 };
+
+
 
 class Tokenizer {
 public:
@@ -355,9 +357,6 @@ struct KVCache {
                           const std::vector<size_t>& v_nodes, size_t seq_len,
                           size_t num_layers, size_t kv_heads, size_t head_dim);
 
-    // Update KV cache from NPU prefill outputs
-    // NPU outputs are in shape [num_tokens, num_kv_heads, head_dim]
-    // This handles transposition to cache format and sliding window
     void update_from_npu(size_t layer_idx, const __fp16* k_data, const __fp16* v_data,
                          size_t num_tokens, size_t kv_heads, size_t head_dim);
 
@@ -380,20 +379,19 @@ struct KVCache {
 class ToolCallConstrainer {
 public:
     enum class State {
-        START,                  // -> expect {
-        EXPECT_FC_KEY,          // -> expect "function_call"
-        EXPECT_FC_COLON,        // -> expect :
-        EXPECT_FC_OPEN_BRACE,   // -> expect {
-        EXPECT_NAME_KEY,        // -> expect "name"
-        EXPECT_NAME_COLON,      // -> expect :
-        EXPECT_NAME_VALUE,      // -> expect "<function_name>"
-        EXPECT_COMMA,           // -> expect ,
-        EXPECT_ARGS_KEY,        // -> expect "arguments"
-        EXPECT_ARGS_COLON,      // -> expect :
-        IN_ARGUMENTS,           // -> free JSON, track brace depth
-        EXPECT_INNER_CLOSE,     // -> expect } to close inner object
-        EXPECT_OUTER_CLOSE,     // -> expect } to close outer object
         DONE,                   // complete
+
+        QWEN_START,             // -> expect <tool_call>
+        QWEN_EXPECT_OPEN_BRACE, // -> expect {
+        QWEN_EXPECT_NAME_KEY,   // -> expect "name"
+        QWEN_EXPECT_NAME_COLON, // -> expect :
+        QWEN_EXPECT_NAME_VALUE, // -> expect function name
+        QWEN_EXPECT_COMMA,      // -> expect , or }
+        QWEN_EXPECT_ARGS_KEY,   // -> expect "arguments"
+        QWEN_EXPECT_ARGS_COLON, // -> expect :
+        QWEN_IN_ARGUMENTS,      // -> free JSON, track brace depth
+        QWEN_EXPECT_CLOSE_BRACE,// -> expect }
+        QWEN_EXPECT_END,        // -> expect </tool_call>
 
         LFM_START,              // -> expect <|tool_call_start|>
         LFM_EXPECT_BRACKET,     // -> expect [
@@ -425,43 +423,44 @@ public:
 
 private:
     bool active_ = false;
-    State state_ = State::START;
+    State state_ = State::QWEN_START;
     Config::ModelType model_type_ = Config::ModelType::QWEN;
     Tokenizer* tokenizer_ = nullptr;
 
     std::vector<std::string> function_names_;
     std::string generated_text_;
-    int brace_depth_ = 0;  // Track nested braces in arguments
+    int brace_depth_ = 0;  
 
-    // Pre-tokenized token sets for each grammar element
-    std::unordered_set<uint32_t> open_brace_tokens_;      // {
-    std::unordered_set<uint32_t> close_brace_tokens_;     // }
-    std::unordered_set<uint32_t> colon_tokens_;           // :
-    std::unordered_set<uint32_t> comma_tokens_;           // ,
-    std::unordered_set<uint32_t> fc_key_tokens_;          // "function_call"
-    std::unordered_set<uint32_t> name_key_tokens_;        // "name"
-    std::unordered_set<uint32_t> args_key_tokens_;        // "arguments"
-    std::unordered_set<uint32_t> quote_tokens_;           // "
-    std::unordered_set<uint32_t> backtick_tokens_;        // ` (to block markdown code fences)
-    std::unordered_set<uint32_t> response_starter_tokens_; // Common response starters to block (I, I'm, Sorry, etc.)
-    std::unordered_set<uint32_t> all_func_name_tokens_;   // All function name tokens combined
-    std::unordered_map<std::string, std::vector<uint32_t>> func_name_sequences_;  // Full token sequence per function
+
+    // Qwen-specific tokens
+    std::unordered_set<uint32_t> qwen_tool_call_start_tokens_; 
+    std::unordered_set<uint32_t> qwen_tool_call_end_tokens_;   
+    std::unordered_set<uint32_t> open_brace_tokens_;         
+    std::unordered_set<uint32_t> close_brace_tokens_;       
+    std::unordered_set<uint32_t> colon_tokens_;            
+    std::unordered_set<uint32_t> comma_tokens_;          
+    std::unordered_set<uint32_t> name_key_tokens_;           
+    std::unordered_set<uint32_t> args_key_tokens_;         
+    std::unordered_set<uint32_t> quote_tokens_;            
+    std::unordered_set<uint32_t> backtick_tokens_;   
+    std::unordered_set<uint32_t> all_func_name_tokens_;
+    std::unordered_map<std::string, std::vector<uint32_t>> func_name_sequences_;  
 
     // LFM2-specific tokens
     std::unordered_set<uint32_t> tool_start_tokens_;
     std::unordered_set<uint32_t> tool_end_tokens_;
-    std::unordered_set<uint32_t> bracket_open_tokens_;    // [
-    std::unordered_set<uint32_t> bracket_close_tokens_;   // ]
-    std::unordered_set<uint32_t> paren_open_tokens_;      // (
-    std::unordered_set<uint32_t> paren_close_tokens_;     // )
-    std::unordered_set<uint32_t> equals_tokens_;          // =
+    std::unordered_set<uint32_t> bracket_open_tokens_;   
+    std::unordered_set<uint32_t> bracket_close_tokens_;  
+    std::unordered_set<uint32_t> paren_open_tokens_;     
+    std::unordered_set<uint32_t> paren_close_tokens_;   
+    std::unordered_set<uint32_t> equals_tokens_;        
 
     // Gemma-specific tokens
-    std::unordered_set<uint32_t> gemma_call_start_tokens_;     // <start_function_call>
-    std::unordered_set<uint32_t> gemma_call_end_tokens_;       // <end_function_call>
-    std::unordered_set<uint32_t> gemma_response_start_tokens_; // <start_function_response> (blocked - app provides this)
-    std::unordered_set<uint32_t> gemma_call_prefix_tokens_;    // call:
-    std::unordered_set<uint32_t> escape_tokens_;               // <escape>
+    std::unordered_set<uint32_t> gemma_call_start_tokens_;    
+    std::unordered_set<uint32_t> gemma_call_end_tokens_;       
+    std::unordered_set<uint32_t> gemma_response_start_tokens_; 
+    std::unordered_set<uint32_t> gemma_call_prefix_tokens_;    
+    std::unordered_set<uint32_t> escape_tokens_;              
 
     std::unordered_map<uint32_t, float> current_bias_;
 

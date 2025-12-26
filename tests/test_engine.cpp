@@ -126,8 +126,8 @@ bool test_tool_call() {
 
     return EngineTestUtils::run_test("TOOL CALL TEST", g_model_path, messages, options_with_force_tools,
         [](int result, const StreamingData&, const std::string& response, const Metrics& m) {
-            bool has_function = response.find("function_call") != std::string::npos;
-            bool has_tool = response.find("get_weather") != std::string::npos;
+            bool has_function = response.find("\"function_calls\":[") != std::string::npos;
+            bool has_tool = has_function && response.find("get_weather") != std::string::npos;
             std::cout << "├─ Function call: " << (has_function ? "YES" : "NO") << "\n"
                       << "├─ Correct tool: " << (has_tool ? "YES" : "NO") << "\n";
             m.print_perf(get_memory_usage_mb());
@@ -323,9 +323,8 @@ bool test_tool_call_with_two_tools() {
 
     return EngineTestUtils::run_test("DOUBLE TOOLS TEST", g_model_path, messages, options_with_force_tools,
         [](int result, const StreamingData&, const std::string& response, const Metrics& m) {
-            bool has_function = response.find("function_call") != std::string::npos ||
-                               response.find("set_alarm") != std::string::npos;
-            bool has_tool = response.find("set_alarm") != std::string::npos;
+            bool has_function = response.find("\"function_calls\":[") != std::string::npos;
+            bool has_tool = has_function && response.find("set_alarm") != std::string::npos;
             std::cout << "├─ Function call: " << (has_function ? "YES" : "NO") << "\n"
                       << "├─ Correct tool: " << (has_tool ? "YES" : "NO") << "\n";
             m.print_perf(get_memory_usage_mb());
@@ -390,9 +389,8 @@ bool test_tool_call_with_three_tools() {
 
     return EngineTestUtils::run_test("TRIPLE TOOLS TEST", g_model_path, messages, options_with_force_tools,
         [](int result, const StreamingData&, const std::string& response, const Metrics& m) {
-            bool has_function = response.find("function_call") != std::string::npos ||
-                               response.find("send_message") != std::string::npos;
-            bool has_tool = response.find("send_message") != std::string::npos;
+            bool has_function = response.find("\"function_calls\":[") != std::string::npos;
+            bool has_tool = has_function && response.find("send_message") != std::string::npos;
             std::cout << "├─ Function call: " << (has_function ? "YES" : "NO") << "\n"
                       << "├─ Correct tool: " << (has_tool ? "YES" : "NO") << "\n";
             m.print_perf(get_memory_usage_mb());
