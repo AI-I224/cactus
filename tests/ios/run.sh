@@ -294,10 +294,12 @@ if [ "$device_type" = "simulator" ]; then
     echo "Using model path: $model_dir"
     echo "Using transcribe model path: $transcribe_model_dir"
     echo "Using assets path: assets"
+    echo "Using index path: assets"
 
     SIMCTL_CHILD_CACTUS_TEST_MODEL="$model_dir" \
     SIMCTL_CHILD_CACTUS_TEST_TRANSCRIBE_MODEL="$transcribe_model_dir" \
     SIMCTL_CHILD_CACTUS_TEST_ASSETS="assets" \
+    SIMCTL_CHILD_CACTUS_INDEX_PATH="assets" \
     xcrun simctl launch --console-pty "$device_uuid" "$bundle_id"
 else
     echo "Installing on: $device_name"
@@ -316,10 +318,12 @@ else
     echo "Using model path: $model_dir"
     echo "Using transcribe model path: $transcribe_model_dir"
     echo "Using assets path: assets"
+    echo "Using index path: assets"
 
     launch_output=$(DEVICECTL_CHILD_CACTUS_TEST_MODEL="$model_dir" \
     DEVICECTL_CHILD_CACTUS_TEST_TRANSCRIBE_MODEL="$transcribe_model_dir" \
     DEVICECTL_CHILD_CACTUS_TEST_ASSETS="assets" \
+    DEVICECTL_CHILD_CACTUS_INDEX_PATH="assets" \
     xcrun devicectl device process launch --device "$device_uuid" "$bundle_id" 2>&1) || true
 
     echo "$launch_output"

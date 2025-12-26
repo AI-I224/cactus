@@ -33,6 +33,7 @@ file(GLOB GRAPH_SOURCES "graph/*.cpp")
 file(GLOB KERNEL_SOURCES "kernel/*.cpp")
 file(GLOB FFI_SOURCES "ffi/*.cpp")
 file(GLOB MODEL_SOURCES "models/*.cpp")
+file(GLOB INDEX_SOURCES "index/*.cpp")
 
 file(GLOB NPU_SOURCES "npu/*.cpp")
 
@@ -51,6 +52,7 @@ set(COMMON_SOURCES
     ${KERNEL_SOURCES}
     ${FFI_SOURCES}
     ${MODEL_SOURCES}
+    ${INDEX_SOURCES}
     ${NPU_SOURCES}
 )
 
@@ -61,6 +63,7 @@ set(COMMON_INCLUDES
     kernel
     ffi
     models
+    index
     npu
 )
 

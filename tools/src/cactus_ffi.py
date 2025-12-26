@@ -6,6 +6,7 @@ import ctypes
 import json
 import platform
 from pathlib import Path
+import json
 
 # Callback type
 TokenCallback = ctypes.CFUNCTYPE(None, ctypes.c_char_p, ctypes.c_uint32, ctypes.c_void_p)
@@ -85,6 +86,28 @@ if _LIB_PATH.exists():
     _lib.cactus_set_pro_key.argtypes = [ctypes.c_char_p]
     _lib.cactus_set_pro_key.restype = None
 
+    _lib.cactus_tokenize.argtypes = [
+    ctypes.c_void_p,
+    ctypes.c_char_p,
+    ctypes.POINTER(ctypes.c_uint32),
+    ctypes.c_size_t,
+    ctypes.POINTER(ctypes.c_size_t),
+    ]
+    _lib.cactus_tokenize.restype = ctypes.c_int
+
+    _lib.cactus_score_window.argtypes = [
+        ctypes.c_void_p,
+        ctypes.POINTER(ctypes.c_uint32),
+        ctypes.c_size_t,
+        ctypes.c_size_t,  # start
+        ctypes.c_size_t,  # end
+        ctypes.c_size_t,  # context
+        ctypes.c_char_p,
+        ctypes.c_size_t,
+    ]
+    _lib.cactus_score_window.restype = ctypes.c_int
+
+
 
 def cactus_init(model_path, context_size=2048, corpus_dir=None):
     """Initialize a model. Returns model handle."""
@@ -162,7 +185,7 @@ def cactus_complete(
         tools_json.encode() if tools_json else None,
         cb, None
     )
-    return buf.value.decode()
+    return buf.value.decode("utf-8", errors="ignore")
 
 
 def cactus_transcribe(model, audio_path, prompt="", callback=None):
@@ -254,3 +277,55 @@ def cactus_set_pro_key(pro_key):
     _lib.cactus_set_pro_key(
         pro_key.encode() if isinstance(pro_key, str) else pro_key
     )
+
+
+def cactus_tokenize(model, text: str):
+    needed = ctypes.c_size_t(0)
+
+    # pass 1: query length
+    rc = _lib.cactus_tokenize(
+        model,
+        text.encode("utf-8"),
+        None,
+        0,
+        ctypes.byref(needed),
+    )
+    if rc != 0:
+        raise RuntimeError(f"cactus_tokenize length query failed rc={rc}")
+
+    n = needed.value
+    arr = (ctypes.c_uint32 * n)()
+
+    # pass 2: fetch tokens
+    rc = _lib.cactus_tokenize(
+        model,
+        text.encode("utf-8"),
+        arr,
+        n,
+        ctypes.byref(needed),
+    )
+    if rc != 0:
+        raise RuntimeError(f"cactus_tokenize fetch failed rc={rc}")
+
+    return [arr[i] for i in range(n)]
+
+
+def cactus_score_window(model, tokens, start, end, context):
+    buf = ctypes.create_string_buffer(4096)
+    n = len(tokens)
+    arr = (ctypes.c_uint32 * n)(*tokens)
+
+    _lib.cactus_score_window(
+        model,
+        arr,
+        n,
+        start,
+        end,
+        context,
+        buf,
+        len(buf),
+    )
+    return json.loads(buf.value.decode("utf-8", errors="ignore"))
+
+
+

@@ -24,18 +24,21 @@ void KVCache::init(size_t layers, size_t max_seq, size_t kv_heads, size_t dim, P
 void KVCache::set_window_size(size_t window, size_t sink) {
     window_size = window;
     sink_size = sink;
+
+    if (num_kv_heads > 0 && head_dim > 0 && window_size > 0) {
+        size_t cache_bytes = window_size * num_kv_heads * head_dim * element_size;
+        for (auto& cache : layer_caches) {
+            cache.keys.resize(cache_bytes);
+            cache.values.resize(cache_bytes);
+            std::memset(cache.keys.data(), 0, cache_bytes);
+            std::memset(cache.values.data(), 0, cache_bytes);
+        }
+    }
 }
 
 void KVCache::reset() {
     current_seq_len = 0;
     total_seq_len = 0;
-
-    for (auto& cache : layer_caches) {
-        cache.keys.clear();
-        cache.keys.shrink_to_fit();
-        cache.values.clear();
-        cache.values.shrink_to_fit();
-    }
 }
 
 void* KVCache::get_key_ptr(size_t layer) {
@@ -311,13 +314,15 @@ void KVCache::update_from_npu(size_t layer_idx, const __fp16* k_data, const __fp
 void ConvCache::init(size_t layers, size_t hidden_dim, size_t window_len, Precision model_precision) {
     num_layers = layers;
     hidden_size = hidden_dim;
-    window_size = window_len;  
+    window_size = window_len;
     precision = model_precision;
     element_size = PrecisionTraits::size_of(precision);
 
+    size_t state_bytes = window_size * hidden_size * element_size;
     layer_states.resize(num_layers);
     for (auto& state : layer_states) {
-        state.data.resize(window_size * hidden_size * element_size);
+        state.data.resize(state_bytes);
+        std::memset(state.data.data(), 0, state_bytes);
         state.head = 0;
         state.count = 0;
     }

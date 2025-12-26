@@ -252,4 +252,77 @@ int cactus_complete(
     }
 }
 
+int cactus_tokenize(
+    cactus_model_t model,
+    const char* text,
+    uint32_t* token_buffer,
+    size_t token_buffer_len,
+    size_t* out_token_len
+) {
+    if (!model || !text || !out_token_len) return -1;
+
+    try {
+        auto* handle = static_cast<CactusModelHandle*>(model);
+        auto* tokenizer = handle->model->get_tokenizer();
+
+        std::vector<uint32_t> toks = tokenizer->encode(std::string(text));
+        *out_token_len = toks.size();
+
+        if (!token_buffer || token_buffer_len == 0) return 0;
+        if (token_buffer_len < toks.size()) return -2;
+
+        std::memcpy(token_buffer, toks.data(), toks.size() * sizeof(uint32_t));
+        return 0;
+    } catch (...) {
+        return -1;
+    }
+}
+
+int cactus_score_window(
+    cactus_model_t model,
+    const uint32_t* tokens,
+    size_t token_len,
+    size_t start,
+    size_t end,
+    size_t context,
+    char* response_buffer,
+    size_t buffer_size
+) {
+    if (!model || !tokens || token_len == 0 || !response_buffer || buffer_size == 0) {
+        handle_error_response("Invalid parameters", response_buffer, buffer_size);
+        return -1;
+    }
+
+    try {
+        auto* handle = static_cast<CactusModelHandle*>(model);
+
+        std::vector<uint32_t> vec(tokens, tokens + token_len);
+
+        size_t scored = 0;
+        double logprob = handle->model->score_tokens_window_logprob(vec, start, end, context, &scored);
+
+        std::ostringstream oss;
+        oss << "{"
+            << "\"success\":true,"
+            << "\"logprob\":" << std::setprecision(10) << logprob << ","
+            << "\"tokens\":" << scored
+            << "}";
+
+        std::string result = oss.str();
+        if (result.size() >= buffer_size) {
+            handle_error_response("Response buffer too small", response_buffer, buffer_size);
+            return -1;
+        }
+
+        std::strcpy(response_buffer, result.c_str());
+        return (int)result.size();
+
+    } catch (const std::exception& e) {
+        handle_error_response(e.what(), response_buffer, buffer_size);
+        return -1;
+    }
+}
+
+
+
 }

@@ -274,6 +274,7 @@ echo "------------------------"
 echo "Using model path: $device_model_dir/$model_dir"
 echo "Using transcribe model path: $device_model_dir/$transcribe_model_dir"
 echo "Using assets path: $device_assets_dir/assets"
+echo "Using index path: $device_assets_dir/assets"
 
 for test_exe in "${test_executables[@]}"; do
     test_name=$(basename "$test_exe")
@@ -282,6 +283,7 @@ for test_exe in "${test_executables[@]}"; do
         export CACTUS_TEST_MODEL=$device_model_dir/$model_dir && \
         export CACTUS_TEST_TRANSCRIBE_MODEL=$device_model_dir/$transcribe_model_dir && \
         export CACTUS_TEST_ASSETS=$device_assets_dir/assets && \
+        export CACTUS_INDEX_PATH=$device_assets_dir/assets && \
         ./$test_name"
 done
 

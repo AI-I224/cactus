@@ -127,6 +127,8 @@ GraphFile::MappedFile::MappedFile(const std::string& filename)
         throw std::runtime_error("Cannot map file: " + filename);
     }
 
+    madvise(mapped_data_, file_size_, MADV_WILLNEED);
+
     close(fd_);
     fd_ = -1;
 

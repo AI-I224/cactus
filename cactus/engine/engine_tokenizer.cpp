@@ -114,13 +114,16 @@ std::string Tokenizer::format_qwen_style(const std::vector<ChatMessage>& message
             }
         }
 
-        result += "You have access to the following tools:\n";
-        result += "[\n";
+        result += "# Tools\n\n";
+        result += "You may call one or more functions to assist with the user query.\n\n";
+        result += "You are provided with function signatures within <tools></tools> XML tags:\n";
+        result += "<tools>\n";
         result += tools_json;
-        result += "\n]\n\n";
-        result += "When you need to call a tool, respond with a JSON object in this exact format:\n";
-        result += "{\"function_call\": {\"name\": \"function_name\", \"arguments\": {\"arg1\": \"value1\"}}}\n";
-        result += "You can call multiple tools by using multiple function_call JSON objects.";
+        result += "\n</tools>\n\n";
+        result += "For each function call, return a json object with function name and arguments within <tool_call></tool_call> XML tags:\n";
+        result += "<tool_call>\n";
+        result += "{\"name\": <function-name>, \"arguments\": <args-json-object>}\n";
+        result += "</tool_call>";
         result += "<|im_end|>\n";
 
         for (const auto& msg : messages) {

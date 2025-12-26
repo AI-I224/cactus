@@ -231,7 +231,14 @@ int cactus_transcribe(
         if (!tokens.empty() && completion_tokens <= tokens.size())
             prompt_tokens = tokens.size() - completion_tokens;
 
-        std::string json = construct_response_json(final_text, {}, time_to_first_token, total_time_ms, tokens_per_second, prompt_tokens, completion_tokens);
+        std::string cleaned_text = final_text;
+        const std::string token_to_remove = "<|startoftranscript|>";
+        size_t pos = 0;
+        while ((pos = cleaned_text.find(token_to_remove, pos)) != std::string::npos) {
+            cleaned_text.erase(pos, token_to_remove.length());
+        }
+
+        std::string json = construct_response_json(cleaned_text, {}, time_to_first_token, total_time_ms, tokens_per_second, prompt_tokens, completion_tokens);
 
         if (json.size() >= buffer_size) {
             handle_error_response("Response buffer too small", response_buffer, buffer_size);

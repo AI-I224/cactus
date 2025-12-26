@@ -6,6 +6,7 @@
 
 extern int test_engine_main();
 extern int test_graph_main();
+extern int test_index_main();
 extern int test_kernel_main();
 extern int test_kv_cache_main();
 extern int test_performance_main();
@@ -43,6 +44,7 @@ extern int test_performance_main();
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(NSEC_PER_SEC)), dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         test_engine_main();
         test_graph_main();
+        test_index_main();
         test_kernel_main();
         test_kv_cache_main();
         test_performance_main();
