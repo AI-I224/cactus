@@ -663,6 +663,95 @@ static bool test_transcription() {
         [](int rc, const Metrics& m) { return rc > 0 && m.completion_tokens >= 8; });
 }
 
+static bool test_stream_transcription() {
+    std::cout << "\n╔══════════════════════════════════════════╗\n"
+              << "║        STREAM TRANSCRIPTION TEST         ║\n"
+              << "╚══════════════════════════════════════════╝\n";
+
+    if (!g_transcribe_model_path) {
+        std::cout << "⊘ SKIP │ CACTUS_TEST_TRANSCRIBE_MODEL not set\n";
+        return true;
+    }
+
+    cactus_model_t model = cactus_init(g_transcribe_model_path, 2048, nullptr);
+    if (!model) {
+        std::cerr << "[✗] Failed to initialize Whisper model\n";
+        return false;
+    }
+
+    cactus_stream_transcribe_t stream = cactus_stream_transcribe_init(model);
+    if (!stream) {
+        std::cerr << "[✗] Failed to initialize stream transcribe\n";
+        cactus_destroy(model);
+        return false;
+    }
+
+    std::string audio_path = std::string(g_assets_path) + "/test.wav";
+    FILE* wav_file = fopen(audio_path.c_str(), "rb");
+    if (!wav_file) {
+        std::cerr << "[✗] Failed to open audio file\n";
+        cactus_stream_transcribe_destroy(stream);
+        cactus_destroy(model);
+        return false;
+    }
+
+    fseek(wav_file, 44, SEEK_SET);
+    std::vector<int16_t> pcm_samples;
+    int16_t sample;
+    while (fread(&sample, sizeof(int16_t), 1, wav_file) == 1) {
+        pcm_samples.push_back(sample);
+    }
+    fclose(wav_file);
+
+    const size_t chunk_size = 48000;
+    size_t chunks_processed = 0;
+    Timer timer;
+
+    for (size_t offset = 0; offset < pcm_samples.size(); offset += chunk_size) {
+        size_t size = std::min(chunk_size, pcm_samples.size() - offset);
+
+        cactus_stream_transcribe_insert(
+            stream,
+            reinterpret_cast<const uint8_t*>(pcm_samples.data() + offset),
+            size * sizeof(int16_t)
+        );
+
+        char response[1 << 15] = {0};
+        int result = cactus_stream_transcribe_process(
+            stream,
+            response,
+            sizeof(response), R"({"confirmation_threshold": 0.90})"
+        );
+
+        if (result < 0) {
+            std::cerr << "\n[✗] Processing failed\n";
+            cactus_stream_transcribe_destroy(stream);
+            cactus_destroy(model);
+            return false;
+        }
+
+        std::string response_str(response);
+        std::string confirmed = json_string(response_str, "confirmed");
+        std::string partial = json_string(response_str, "partial");
+
+        if (!confirmed.empty() || !partial.empty()) {
+            std::cout << "├─ Confirmed: " << confirmed << "\n"
+                      << "└─ Partial: " << partial << std::endl;
+        }
+        chunks_processed++;
+    }
+
+    double elapsed = timer.elapsed_ms();
+    std::cout << "\n[Results]\n"
+              << "├─ Chunks processed: " << chunks_processed << "\n"
+              << "├─ Total time: " << std::fixed << std::setprecision(2) << (elapsed / 1000.0) << " sec\n"
+              << "└─ RAM: " << std::setprecision(1) << get_memory_usage_mb() << "MB" << std::endl;
+
+    cactus_stream_transcribe_destroy(stream);
+    cactus_destroy(model);
+    return true;
+}
+
 static bool test_image_embeddings() {
     std::cout << "\n╔══════════════════════════════════════════╗\n"
               << "║         IMAGE EMBEDDING TEST             ║\n"
@@ -899,6 +988,7 @@ int main() {
     runner.run_test("audio_processor", test_audio_processor());
     runner.run_test("transcription", test_transcription());
     runner.run_test("pcm_transcription", test_pcm_transcription());
+    runner.run_test("stream_transcription", test_stream_transcription());
     runner.run_test("rag_preprocessing", test_rag());
     runner.run_test("100_context", test_100_context());
     runner.run_test("1k_context", test_1k_context());
