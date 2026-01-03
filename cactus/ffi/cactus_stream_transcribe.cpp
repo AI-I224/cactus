@@ -293,17 +293,17 @@ int cactus_stream_transcribe_process(
 
         const size_t n = std::min(handle->previous_transcription.size(), response.size());
         if (fuzzy_match(handle->previous_transcription, response, n, confirmation_threshold)) {
-            handle->audio_buffer = std::vector<uint8_t>(
-                handle->audio_buffer.begin() + handle->previous_audio_buffer_size,
-                handle->audio_buffer.end()
+            handle->audio_buffer.erase(
+                handle->audio_buffer.begin(),
+                handle->audio_buffer.begin() + handle->previous_audio_buffer_size
             );
             handle->last_n_words = get_last_n_words(handle->last_n_words + handle->previous_transcription, 200);
-            handle->confirmed = handle->previous_transcription;
-            handle->previous_transcription = "";
+            handle->confirmed = std::move(handle->previous_transcription);
+            handle->previous_transcription.clear();
             handle->previous_audio_buffer_size = 0;
         } else {
-            handle->confirmed = "";
-            handle->previous_transcription = response;
+            handle->confirmed.clear();
+            handle->previous_transcription = std::move(response);
             handle->previous_audio_buffer_size = handle->audio_buffer.size();
         }
 
