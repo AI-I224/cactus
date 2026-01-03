@@ -290,6 +290,7 @@ cactus_stream_transcribe_t cactus_stream_transcribe_init(
 **Example:**
 ```c
 cactus_model_t whisper = cactus_init("../../weights/whisper-small", 448, NULL);
+
 cactus_stream_transcribe_t stream = cactus_stream_transcribe_init(whisper);
 if (!stream) {
     fprintf(stderr, "Failed to initialize stream: %s\n", cactus_get_last_error());
@@ -314,7 +315,6 @@ int cactus_stream_transcribe_insert(
 ```c
 // Insert 1 second of audio (16kHz * 2 bytes per sample)
 uint8_t audio_chunk[32000];
-// ... fill audio_chunk with PCM data ...
 
 int result = cactus_stream_transcribe_insert(stream, audio_chunk, sizeof(audio_chunk));
 if (result < 0) {
@@ -359,24 +359,12 @@ int cactus_stream_transcribe_process(
 
 **Example:**
 ```c
-cactus_stream_transcribe_t stream = cactus_stream_transcribe_init(whisper);
+char response[32768];
+int result = cactus_stream_transcribe_process(stream, response, sizeof(response), "{\"confirmation_threshold\": 0.90}");
 
-while (has_audio) {
-    uint8_t chunk[32000];
-    size_t chunk_size = read_audio(chunk, sizeof(chunk));
-
-    cactus_stream_transcribe_insert(stream, chunk, chunk_size);
-
-    char response[32768];
-    const char* options = "{\"confirmation_threshold\": 0.90}";
-    int result = cactus_stream_transcribe_process(stream, response, sizeof(response), options);
-
-    if (result > 0) {
-        printf("Response: %s\n", response);
-    }
+if (result > 0) {
+    printf("Response: %s\n", response);
 }
-
-cactus_stream_transcribe_destroy(stream);
 ```
 
 ### `cactus_stream_transcribe_finalize`
@@ -402,25 +390,13 @@ int cactus_stream_transcribe_finalize(
 
 **Example:**
 ```c
-std::string full_transcription;
-
-while (has_audio) {
-    uint8_t chunk[32000];
-    size_t chunk_size = read_audio(chunk, sizeof(chunk));
-    cactus_stream_transcribe_insert(stream, chunk, chunk_size);
-
-    char response[32768];
-    cactus_stream_transcribe_process(stream, response, sizeof(response), NULL);
-
-    full_transcription += parse_json(response, "confirmed");
-}
-
-// Get final delta
+// After processing audio chunks
 char final_response[32768];
-cactus_stream_transcribe_finalize(stream, final_response, sizeof(final_response));
-full_transcription += parse_json(final_response, "confirmed");
+int result = cactus_stream_transcribe_finalize(stream, final_response, sizeof(final_response));
 
-cactus_stream_transcribe_destroy(stream);
+if (result > 0) {
+    printf("Final: %s\n", final_response);
+}
 ```
 
 ### `cactus_stream_transcribe_destroy`

@@ -65,7 +65,10 @@ static std::string extract_json_string_value(const std::string& json, const std:
     return result;
 }
 
-static size_t levenshtein_distance(const std::string& a, const std::string& b, size_t n) {
+static bool fuzzy_match(const std::string& a, const std::string& b, size_t n, double threshold) {
+    if (!n) return false;
+    if (a.size() < n || b.size() < n) return false;
+
     std::vector<std::vector<size_t>> dp(n + 1, std::vector<size_t>(n + 1));
 
     for (size_t i = 0; i <= n; ++i) {
@@ -87,15 +90,7 @@ static size_t levenshtein_distance(const std::string& a, const std::string& b, s
         }
     }
 
-    return dp[n][n];
-}
-
-static bool fuzzy_match(const std::string& a, const std::string& b, size_t n, double threshold) {
-    if (!n) return false;
-    if (a.size() < n || b.size() < n) return false;
-
-    size_t dist = levenshtein_distance(a, b, n);
-    return 1.0 - static_cast<double>(dist) / static_cast<double>(n) >= threshold;
+    return 1.0 - static_cast<double>(dp[n][n]) / static_cast<double>(n) >= threshold;
 }
 
 static std::string get_last_n_words(const std::string& text, size_t n) {
