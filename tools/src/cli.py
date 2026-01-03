@@ -75,7 +75,7 @@ def cmd_download(args):
     from .converter_vlm import convert_processors
     from .tokenizer import convert_hf_tokenizer
     from .tensor_io import format_config_value
-    from .config_utils import is_lfm2_vl, pick_torch_dtype, vision_weight_sanity_check
+    from .config_utils import is_lfm2_vl, pick_dtype, vision_weight_sanity_check
 
     weights_dir.mkdir(parents=True, exist_ok=True)
 
@@ -118,12 +118,12 @@ def cmd_download(args):
 
             processor = AutoProcessor.from_pretrained(model_id, cache_dir=cache_dir, trust_remote_code=True, token=token)
             cfg = AutoConfig.from_pretrained(model_id, cache_dir=cache_dir, trust_remote_code=True, token=token)
-            dtype = pick_torch_dtype()
+            dtype = pick_dtype()
 
             if is_lfm2_vl(model_id, cfg) and Lfm2VlForConditionalGeneration is not None:
-                model = Lfm2VlForConditionalGeneration.from_pretrained(model_id, cache_dir=cache_dir, trust_remote_code=True, torch_dtype=dtype, token=token)
+                model = Lfm2VlForConditionalGeneration.from_pretrained(model_id, cache_dir=cache_dir, trust_remote_code=True, dtype=dtype, token=token)
             else:
-                model = AutoModelForImageTextToText.from_pretrained(model_id, cache_dir=cache_dir, trust_remote_code=True, torch_dtype=dtype, token=token)
+                model = AutoModelForImageTextToText.from_pretrained(model_id, cache_dir=cache_dir, trust_remote_code=True, dtype=dtype, token=token)
 
             tokenizer = getattr(processor, "tokenizer", None)
             if tokenizer is None:

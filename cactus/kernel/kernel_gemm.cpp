@@ -5,7 +5,6 @@
 #include <algorithm>
 #include <cmath>
 
-// Thread-local buffer pool to avoid per-call allocations in cactus_matmul_int
 namespace {
     struct GemmBuffers {
         std::vector<int8_t> A_quant;
@@ -242,9 +241,8 @@ void cactus_matmul_int(
     const size_t num_groups = K / group_size;
     constexpr size_t TILE_M = 4;
     constexpr size_t TILE_N = 4;
-    const size_t K_aligned = ((K + 31) / 32) * 32;
+    const size_t K_aligned = ((K + group_size - 1) / group_size) * group_size;
 
-    // Use pooled buffers to avoid per-call allocation
     const size_t quant_size = M * K_aligned;
     if (gemm_buffers.A_quant.size() < quant_size) {
         gemm_buffers.A_quant.resize(quant_size);
@@ -273,25 +271,30 @@ void cactus_matmul_int(
             for (size_t g = 0; g < num_groups; g++) {
                 size_t k_base = g * group_size;
 
-                int8x16_t b_vec0[TILE_N], b_vec1[TILE_N];
                 float b_scale[TILE_N];
                 for (size_t ni = 0; ni < actual_n; ni++) {
-                    b_vec0[ni] = vld1q_s8(B + (n_start + ni) * K + k_base);
-                    b_vec1[ni] = vld1q_s8(B + (n_start + ni) * K + k_base + 16);
-                    b_scale[ni] = (float)B_scales[(n_start + ni) * num_groups + g];
+                    b_scale[ni] = (float)B_scales[g * N + (n_start + ni)];
                 }
 
-                for (size_t mi = 0; mi < actual_m; mi++) {
-                    const int8_t* a_ptr = A_quant + (m_start + mi) * K_aligned + k_base;
-                    int8x16_t a_vec0 = vld1q_s8(a_ptr);
-                    int8x16_t a_vec1 = vld1q_s8(a_ptr + 16);
-                    float a_scale = A_scales[m_start + mi];
-
+                for (size_t k_offset = 0; k_offset < group_size; k_offset += 32) {
+                    int8x16_t b_vec0[TILE_N], b_vec1[TILE_N];
                     for (size_t ni = 0; ni < actual_n; ni++) {
-                        int32x4_t sum = vdupq_n_s32(0);
-                        sum = vdotq_s32(sum, a_vec0, b_vec0[ni]);
-                        sum = vdotq_s32(sum, a_vec1, b_vec1[ni]);
-                        acc[mi][ni] += (float)vaddvq_s32(sum) * (a_scale * b_scale[ni]);
+                        b_vec0[ni] = vld1q_s8(B + (n_start + ni) * K + k_base + k_offset);
+                        b_vec1[ni] = vld1q_s8(B + (n_start + ni) * K + k_base + k_offset + 16);
+                    }
+
+                    for (size_t mi = 0; mi < actual_m; mi++) {
+                        const int8_t* a_ptr = A_quant + (m_start + mi) * K_aligned + k_base + k_offset;
+                        int8x16_t a_vec0 = vld1q_s8(a_ptr);
+                        int8x16_t a_vec1 = vld1q_s8(a_ptr + 16);
+                        float a_scale = A_scales[m_start + mi];
+
+                        for (size_t ni = 0; ni < actual_n; ni++) {
+                            int32x4_t sum = vdupq_n_s32(0);
+                            sum = vdotq_s32(sum, a_vec0, b_vec0[ni]);
+                            sum = vdotq_s32(sum, a_vec1, b_vec1[ni]);
+                            acc[mi][ni] += (float)vaddvq_s32(sum) * (a_scale * b_scale[ni]);
+                        }
                     }
                 }
             }

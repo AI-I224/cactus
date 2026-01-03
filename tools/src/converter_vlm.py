@@ -8,7 +8,7 @@ except ImportError:
     torch = None
 
 from .tensor_io import save_tensor_with_header, create_quantization_stats, print_quantization_summary
-from .config_utils import cfg_get, is_lfm2_vl, pick_torch_dtype, vision_weight_sanity_check
+from .config_utils import cfg_get, is_lfm2_vl, pick_dtype, vision_weight_sanity_check
 from .weight_patterns import (
     EMBED_NAMES, OUTPUT_NAMES, OUTPUT_NORM_NAMES,
     VISION_ITEMS, PROJECTOR_WEIGHTS, CONNECTOR_KEYS,

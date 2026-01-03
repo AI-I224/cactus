@@ -9,7 +9,7 @@ except ImportError:
     torch = None
 
 
-GROUP_SIZE = 32 
+GROUP_SIZE = 128 
 
 
 def save_tensor_with_header(tensor, output_path, precision='FP16', transpose=False, stats_tracker=None, args=None, model_type=None):
@@ -70,7 +70,7 @@ def save_tensor_with_header(tensor, output_path, precision='FP16', transpose=Fal
             dequant_flat = dequantized.flatten()
             cos_sim = np.dot(original_flat, dequant_flat) / (np.linalg.norm(original_flat) * np.linalg.norm(dequant_flat) + 1e-10)
 
-            scales_fp16 = scales.astype(np.float16)
+            scales_fp16 = scales.T.astype(np.float16)
 
         elif len(shape) == 1:
             K = shape[0]
@@ -103,7 +103,7 @@ def save_tensor_with_header(tensor, output_path, precision='FP16', transpose=Fal
             snr_db = 10 * np.log10(np.var(original_data) / mse_error) if mse_error > 0 else float('inf')
             cos_sim = np.dot(original_data, dequantized) / (np.linalg.norm(original_data) * np.linalg.norm(dequantized) + 1e-10)
 
-            scales_fp16 = scales.astype(np.float16)
+            scales_fp16 = scales.T.astype(np.float16)
         else:
             precision = 'FP16'
 

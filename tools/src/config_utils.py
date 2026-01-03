@@ -122,7 +122,7 @@ def is_lfm2_vl(model_name, cfg):
     return "lfm2-vl" in name
 
 
-def pick_torch_dtype():
+def pick_dtype():
     """Select the best torch dtype based on hardware capabilities."""
     import torch
     if torch.cuda.is_available():
