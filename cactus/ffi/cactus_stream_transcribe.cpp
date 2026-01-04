@@ -69,28 +69,33 @@ static bool fuzzy_match(const std::string& a, const std::string& b, size_t n, do
     if (!n) return false;
     if (a.size() < n || b.size() < n) return false;
 
-    std::vector<std::vector<size_t>> dp(n + 1, std::vector<size_t>(n + 1));
+    std::vector<size_t> dp(n + 1);
+    size_t dp_im1_jm1;
 
-    for (size_t i = 0; i <= n; ++i) {
-        dp[i][0] = i;
-        dp[0][i] = i;
-    }
+    for (size_t j = 0; j <= n; ++j) dp[j] = j;
 
     for (size_t i = 1; i <= n; ++i) {
+        dp_im1_jm1 = dp[0];
+        dp[0] = i;
+
         for (size_t j = 1; j <= n; ++j) {
+            size_t dp_im1_j = dp[j];
+
             if (a[i - 1] == b[j - 1]) {
-                dp[i][j] = dp[i - 1][j - 1];
+                dp[j] = dp_im1_jm1;
             } else {
-                dp[i][j] = std::min({
-                    dp[i - 1][j] + 1,
-                    dp[i][j - 1] + 1,
-                    dp[i - 1][j - 1] + 1
+                dp[j] = std::min({
+                    dp[j] + 1,
+                    dp[j - 1] + 1,
+                    dp_im1_jm1 + 1
                 });
             }
+            
+            dp_im1_jm1 = dp_im1_j;
         }
     }
 
-    return 1.0 - static_cast<double>(dp[n][n]) / static_cast<double>(n) >= threshold;
+    return 1.0 - static_cast<double>(dp[n]) / static_cast<double>(n) >= threshold;
 }
 
 static std::string get_last_n_words(const std::string& text, size_t n) {
