@@ -30,11 +30,11 @@ inline int8_t clamp_to_int8(int32_t value) {
 }
 
 #if defined(__ARM_FEATURE_DOTPROD)
-inline int32x4_t accum_i8mm(int32x4_t acc, int8x16_t a, int8x16_t b) {
+inline int32x4_t accum_dot(int32x4_t acc, int8x16_t a, int8x16_t b) {
     return vdotq_s32(acc, a, b);
 }
 #else
-inline int32x4_t accum_i8mm(int32x4_t acc, int8x16_t a, int8x16_t b) {
+inline int32x4_t accum_dot(int32x4_t acc, int8x16_t a, int8x16_t b) {
     int16x8_t prod_low = vmull_s8(vget_low_s8(a), vget_low_s8(b));
     int32x4_t acc_high = vpaddlq_s16(vmull_s8(vget_high_s8(a), vget_high_s8(b)));
     return vaddq_s32(vaddq_s32(acc, vpaddlq_s16(prod_low)), acc_high);

@@ -238,9 +238,16 @@ void cactus_matmul_int(
 ) {
     if (M == 0 || K == 0 || N == 0) return;
 
+    #if defined(__APPLE__) && defined(__arm64__)
+      constexpr size_t TILE_M = 4;
+      constexpr size_t TILE_N = 8;
+  #else 
+      // Android, Raspberry Pi, Linux ARM, Graviton, etc.
+      constexpr size_t TILE_M = 4;
+      constexpr size_t TILE_N = 4;
+  #endif
+
     const size_t num_groups = K / group_size;
-    constexpr size_t TILE_M = 4;
-    constexpr size_t TILE_N = 4;
     const size_t K_aligned = ((K + group_size - 1) / group_size) * group_size;
 
     const size_t quant_size = M * K_aligned;
@@ -261,52 +268,57 @@ void cactus_matmul_int(
             }
         });
 
+    constexpr size_t MAX_GROUPS = 64;
+
     CactusThreading::parallel_for_2d_tiled(M, N, TILE_M, TILE_N,
         [&, A_quant, A_scales](size_t m_start, size_t m_end, size_t n_start, size_t n_end) {
             size_t actual_m = m_end - m_start;
             size_t actual_n = n_end - n_start;
 
-            float acc[TILE_M][TILE_N] = {{0}};
+            int32_t all_group_acc[MAX_GROUPS][TILE_M][TILE_N] = {{{0}}};
 
             for (size_t g = 0; g < num_groups; g++) {
                 size_t k_base = g * group_size;
 
-                float combined_scale[TILE_M][TILE_N];
-                for (size_t mi = 0; mi < actual_m; mi++) {
-                    float a_scale = A_scales[m_start + mi];
+                for (size_t k_offset = 0; k_offset < group_size; k_offset += 64) {
+                    int8x16_t b_vec0[TILE_N], b_vec1[TILE_N], b_vec2[TILE_N], b_vec3[TILE_N];
                     for (size_t ni = 0; ni < actual_n; ni++) {
-                        float b_scale = (float)B_scales[g * N + (n_start + ni)];
-                        combined_scale[mi][ni] = a_scale * b_scale;
-                    }
-                }
-
-                int32_t group_acc[TILE_M][TILE_N] = {{0}};
-
-                for (size_t k_offset = 0; k_offset < group_size; k_offset += 32) {
-                    int8x16_t b_vec0[TILE_N], b_vec1[TILE_N];
-                    for (size_t ni = 0; ni < actual_n; ni++) {
-                        b_vec0[ni] = vld1q_s8(B + (n_start + ni) * K + k_base + k_offset);
-                        b_vec1[ni] = vld1q_s8(B + (n_start + ni) * K + k_base + k_offset + 16);
+                        const int8_t* b_ptr = B + (n_start + ni) * K + k_base + k_offset;
+                        b_vec0[ni] = vld1q_s8(b_ptr);
+                        b_vec1[ni] = vld1q_s8(b_ptr + 16);
+                        b_vec2[ni] = vld1q_s8(b_ptr + 32);
+                        b_vec3[ni] = vld1q_s8(b_ptr + 48);
                     }
 
                     for (size_t mi = 0; mi < actual_m; mi++) {
                         const int8_t* a_ptr = A_quant + (m_start + mi) * K_aligned + k_base + k_offset;
                         int8x16_t a_vec0 = vld1q_s8(a_ptr);
                         int8x16_t a_vec1 = vld1q_s8(a_ptr + 16);
+                        int8x16_t a_vec2 = vld1q_s8(a_ptr + 32);
+                        int8x16_t a_vec3 = vld1q_s8(a_ptr + 48);
 
                         for (size_t ni = 0; ni < actual_n; ni++) {
                             int32x4_t sum = vdupq_n_s32(0);
-                            sum = vdotq_s32(sum, a_vec0, b_vec0[ni]);
-                            sum = vdotq_s32(sum, a_vec1, b_vec1[ni]);
-                            group_acc[mi][ni] += vaddvq_s32(sum);
+                            sum = accum_dot(sum, a_vec0, b_vec0[ni]);
+                            sum = accum_dot(sum, a_vec1, b_vec1[ni]);
+                            sum = accum_dot(sum, a_vec2, b_vec2[ni]);
+                            sum = accum_dot(sum, a_vec3, b_vec3[ni]);
+                            all_group_acc[g][mi][ni] += vaddvq_s32(sum);
                         }
                     }
                 }
+            }
 
-                for (size_t mi = 0; mi < actual_m; mi++) {
-                    for (size_t ni = 0; ni < actual_n; ni++) {
-                        acc[mi][ni] += (float)group_acc[mi][ni] * combined_scale[mi][ni];
+            float acc[TILE_M][TILE_N] = {{0}};
+            for (size_t mi = 0; mi < actual_m; mi++) {
+                float a_scale = A_scales[m_start + mi];
+                for (size_t ni = 0; ni < actual_n; ni++) {
+                    float sum = 0.0f;
+                    for (size_t g = 0; g < num_groups; g++) {
+                        float b_scale = (float)B_scales[g * N + (n_start + ni)];
+                        sum += (float)all_group_acc[g][mi][ni] * b_scale;
                     }
+                    acc[mi][ni] = sum * a_scale;
                 }
             }
 
