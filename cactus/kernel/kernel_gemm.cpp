@@ -268,7 +268,6 @@ void cactus_matmul_int(
         gemm_buffers.row_data_size = M;
     }
 
-    // Reset row states (each on its own cache line - no false sharing)
     for (size_t m = 0; m < M; m++) {
         gemm_buffers.row_data[m].state.store(static_cast<uint8_t>(RowState::NOT_STARTED),
             std::memory_order_relaxed);
@@ -279,12 +278,11 @@ void cactus_matmul_int(
 
     constexpr size_t MAX_GROUPS = 64;
 
-    CactusThreading::parallel_for_2d_tiled(M, N, TILE_M, TILE_N,
+    CactusThreading::parallel_for_2d_tiled_gemm(M, M, N, TILE_M, TILE_N,
         [=](size_t m_start, size_t m_end, size_t n_start, size_t n_end) {
             const size_t actual_m = m_end - m_start;
             const size_t actual_n = n_end - n_start;
 
-            // Quantize rows on-demand (each row_data is cache-line aligned)
             for (size_t m = m_start; m < m_end; m++) {
                 uint8_t expected = static_cast<uint8_t>(RowState::NOT_STARTED);
 

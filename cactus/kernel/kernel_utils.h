@@ -2,6 +2,9 @@
 #define KERNEL_UTILS_H
 
 #include <arm_neon.h>
+#if defined(__APPLE__)
+#include <TargetConditionals.h>
+#endif
 #include <algorithm>
 #include <cmath>
 #include <thread>
@@ -192,6 +195,27 @@ namespace CactusThreading {
             });
         }
 
+        template<typename F>
+        void enqueue_n_threads(size_t total_work, size_t num_threads, F task_func) {
+            if (total_work == 0 || num_threads == 0) return;
+
+            num_threads = std::min(num_threads, std::min(num_workers_, total_work));
+            const size_t per_thread = total_work / num_threads;
+            const size_t remainder = total_work % num_threads;
+
+            total_tasks.fetch_add(num_threads, std::memory_order_relaxed);
+
+            for (size_t t = 0; t < num_threads; ++t) {
+                size_t start = t * per_thread + std::min(t, remainder);
+                size_t end = start + per_thread + (t < remainder ? 1 : 0);
+
+                std::lock_guard<std::mutex> lock(worker_queues[t % num_workers_]->mutex);
+                worker_queues[t % num_workers_]->tasks.emplace_back(
+                    [=]() { task_func(start, end); }
+                );
+            }
+        }
+
         size_t num_workers() const { return num_workers_; }
     };
 
@@ -219,7 +243,6 @@ namespace CactusThreading {
     struct Thresholds {
         #if defined(__ANDROID__)
         static constexpr ParallelConfig ATTENTION{64, 32};
-        static constexpr ParallelConfig GEMM_TILED{10000, 5000};
         static constexpr ParallelConfig ELEMENT_WISE{5000, 2500};
         static constexpr ParallelConfig AXIS_REDUCE{1000, 500};
         static constexpr ParallelConfig ALL_REDUCE{10000, 5000};
@@ -227,7 +250,6 @@ namespace CactusThreading {
         static constexpr ParallelConfig SCALAR_EXPENSIVE{10000, 5000};
         #else // Apple
         static constexpr ParallelConfig ATTENTION{32, 16};
-        static constexpr ParallelConfig GEMM_TILED{16, 8};
         static constexpr ParallelConfig ELEMENT_WISE{5000, 2500};
         static constexpr ParallelConfig AXIS_REDUCE{1000, 500};
         static constexpr ParallelConfig ALL_REDUCE{10000, 5000};
@@ -236,17 +258,36 @@ namespace CactusThreading {
         #endif
     };
 
-    inline ParallelConfig& get_gemm_config_override() {
-        static ParallelConfig config = Thresholds::GEMM_TILED;
-        return config;
+    struct GemmThreading {
+        #if defined(__ANDROID__)
+        static size_t get_num_threads(size_t M, size_t pool_size) {
+            if (M <= 1) return 1; 
+            return pool_size; 
+        }
+        #elif defined(__APPLE__) && TARGET_OS_IPHONE
+        static size_t get_num_threads(size_t M, size_t pool_size) {
+            if (M <= 1) return std::min(pool_size, static_cast<size_t>(2)); 
+            return pool_size; 
+        }
+        #else // Mac
+        static size_t get_num_threads(size_t M, size_t pool_size) {
+            if (M <= 1) return std::min(pool_size, static_cast<size_t>(4));
+            return pool_size; 
+        }
+        #endif
+    };
+
+    inline size_t& get_gemm_thread_override() {
+        static size_t override_threads = 0; 
+        return override_threads;
     }
 
-    inline void set_gemm_config(size_t min_work_gate, size_t work_per_thread) {
-        get_gemm_config_override() = ParallelConfig{min_work_gate, work_per_thread};
+    inline void set_gemm_threads(size_t num_threads) {
+        get_gemm_thread_override() = num_threads;
     }
 
-    inline void reset_gemm_config() {
-        get_gemm_config_override() = Thresholds::GEMM_TILED;
+    inline void reset_gemm_threads() {
+        get_gemm_thread_override() = 0;
     }
     
     class TaskHandle {
@@ -369,12 +410,51 @@ namespace CactusThreading {
     }
 
     template<typename WorkFunc>
-    void parallel_for_2d_tiled(size_t rows, size_t cols, size_t tile_rows, size_t tile_cols, WorkFunc work_func) {
+    void parallel_for_2d_tiled_gemm(size_t M, size_t rows, size_t cols, size_t tile_rows, size_t tile_cols, WorkFunc work_func) {
         size_t num_row_tiles = (rows + tile_rows - 1) / tile_rows;
         size_t num_col_tiles = (cols + tile_cols - 1) / tile_cols;
         size_t total_tiles = num_row_tiles * num_col_tiles;
 
-        const auto& config = get_gemm_config_override();
+        auto& pool = get_thread_pool();
+
+        size_t override = get_gemm_thread_override();
+        size_t num_threads = (override > 0) ? override : GemmThreading::get_num_threads(M, pool.num_workers());
+        num_threads = std::min(num_threads, total_tiles);
+
+        if (num_threads <= 1) {
+            for (size_t tile_idx = 0; tile_idx < total_tiles; ++tile_idx) {
+                size_t tile_row = tile_idx / num_col_tiles;
+                size_t tile_col = tile_idx % num_col_tiles;
+                size_t row_start = tile_row * tile_rows;
+                size_t row_end = std::min(row_start + tile_rows, rows);
+                size_t col_start = tile_col * tile_cols;
+                size_t col_end = std::min(col_start + tile_cols, cols);
+                work_func(row_start, row_end, col_start, col_end);
+            }
+            return;
+        }
+
+        pool.enqueue_n_threads(total_tiles, num_threads,
+            [=](size_t start_tile, size_t end_tile) {
+                for (size_t tile_idx = start_tile; tile_idx < end_tile; ++tile_idx) {
+                    size_t tile_row = tile_idx / num_col_tiles;
+                    size_t tile_col = tile_idx % num_col_tiles;
+                    size_t row_start = tile_row * tile_rows;
+                    size_t row_end = std::min(row_start + tile_rows, rows);
+                    size_t col_start = tile_col * tile_cols;
+                    size_t col_end = std::min(col_start + tile_cols, cols);
+                    work_func(row_start, row_end, col_start, col_end);
+                }
+            });
+        pool.wait_all();
+    }
+
+    template<typename WorkFunc>
+    void parallel_for_2d_tiled(size_t rows, size_t cols, size_t tile_rows, size_t tile_cols, ParallelConfig config, WorkFunc work_func) {
+        size_t num_row_tiles = (rows + tile_rows - 1) / tile_rows;
+        size_t num_col_tiles = (cols + tile_cols - 1) / tile_cols;
+        size_t total_tiles = num_row_tiles * num_col_tiles;
+
         if (total_tiles < config.min_work_gate) {
             for (size_t tile_idx = 0; tile_idx < total_tiles; ++tile_idx) {
                 size_t tile_row = tile_idx / num_col_tiles;
