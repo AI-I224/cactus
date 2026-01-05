@@ -6,11 +6,21 @@
 #include <cmath>
 
 namespace {
+    constexpr size_t CACHE_LINE = 64;
+
+    struct alignas(CACHE_LINE) PaddedRowData {
+        float scale;
+        std::atomic<uint8_t> state;
+    };
+
     struct GemmBuffers {
         std::vector<int8_t> A_quant;
-        std::vector<float> A_scales;
+        std::unique_ptr<PaddedRowData[]> row_data;
+        size_t row_data_size = 0;
     };
-    static thread_local GemmBuffers gemm_buffers;
+    static GemmBuffers gemm_buffers;
+
+    enum class RowState : uint8_t { NOT_STARTED = 0, IN_PROGRESS = 1, DONE = 2 };
 }
 
 static void cactus_matmul_f16_worker(
@@ -241,11 +251,10 @@ void cactus_matmul_int(
     #if defined(__APPLE__) && defined(__arm64__)
       constexpr size_t TILE_M = 4;
       constexpr size_t TILE_N = 8;
-  #else 
-      // Android, Raspberry Pi, Linux ARM, Graviton, etc.
+    #else
       constexpr size_t TILE_M = 4;
       constexpr size_t TILE_N = 4;
-  #endif
+    #endif
 
     const size_t num_groups = K / group_size;
     const size_t K_aligned = ((K + group_size - 1) / group_size) * group_size;
@@ -254,31 +263,55 @@ void cactus_matmul_int(
     if (gemm_buffers.A_quant.size() < quant_size) {
         gemm_buffers.A_quant.resize(quant_size);
     }
-    if (gemm_buffers.A_scales.size() < M) {
-        gemm_buffers.A_scales.resize(M);
+    if (gemm_buffers.row_data_size < M) {
+        gemm_buffers.row_data = std::make_unique<PaddedRowData[]>(M);
+        gemm_buffers.row_data_size = M;
     }
-    int8_t* A_quant = gemm_buffers.A_quant.data();
-    float* A_scales = gemm_buffers.A_scales.data();
 
-    CactusThreading::parallel_for(M, CactusThreading::Thresholds::ELEMENT_WISE,
-        [&, A_quant, A_scales](size_t m_start, size_t m_end) {
-            for (size_t m = m_start; m < m_end; m++) {
-                A_scales[m] = quantize_row_fp16_to_int8(
-                    A + m * K, A_quant + m * K_aligned, K);
-            }
-        });
+    // Reset row states (each on its own cache line - no false sharing)
+    for (size_t m = 0; m < M; m++) {
+        gemm_buffers.row_data[m].state.store(static_cast<uint8_t>(RowState::NOT_STARTED),
+            std::memory_order_relaxed);
+    }
+
+    int8_t* A_quant = gemm_buffers.A_quant.data();
+    auto* row_data = gemm_buffers.row_data.get();
 
     constexpr size_t MAX_GROUPS = 64;
 
     CactusThreading::parallel_for_2d_tiled(M, N, TILE_M, TILE_N,
-        [&, A_quant, A_scales](size_t m_start, size_t m_end, size_t n_start, size_t n_end) {
-            size_t actual_m = m_end - m_start;
-            size_t actual_n = n_end - n_start;
+        [=](size_t m_start, size_t m_end, size_t n_start, size_t n_end) {
+            const size_t actual_m = m_end - m_start;
+            const size_t actual_n = n_end - n_start;
+
+            // Quantize rows on-demand (each row_data is cache-line aligned)
+            for (size_t m = m_start; m < m_end; m++) {
+                uint8_t expected = static_cast<uint8_t>(RowState::NOT_STARTED);
+
+                if (row_data[m].state.compare_exchange_strong(expected,
+                        static_cast<uint8_t>(RowState::IN_PROGRESS),
+                        std::memory_order_acq_rel)) {
+
+                    row_data[m].scale = quantize_row_fp16_to_int8(
+                        A + m * K, A_quant + m * K_aligned, K);
+
+                    row_data[m].state.store(static_cast<uint8_t>(RowState::DONE),
+                        std::memory_order_release);
+
+                } else {
+                    while (row_data[m].state.load(std::memory_order_acquire) !=
+                           static_cast<uint8_t>(RowState::DONE)) {
+                        #if defined(__arm__) || defined(__aarch64__)
+                            __asm__ volatile("yield");
+                        #endif
+                    }
+                }
+            }
 
             int32_t all_group_acc[MAX_GROUPS][TILE_M][TILE_N] = {{{0}}};
 
             for (size_t g = 0; g < num_groups; g++) {
-                size_t k_base = g * group_size;
+                const size_t k_base = g * group_size;
 
                 for (size_t k_offset = 0; k_offset < group_size; k_offset += 64) {
                     int8x16_t b_vec0[TILE_N], b_vec1[TILE_N], b_vec2[TILE_N], b_vec3[TILE_N];
@@ -309,22 +342,15 @@ void cactus_matmul_int(
                 }
             }
 
-            float acc[TILE_M][TILE_N] = {{0}};
             for (size_t mi = 0; mi < actual_m; mi++) {
-                float a_scale = A_scales[m_start + mi];
+                const float a_scale = row_data[m_start + mi].scale;
                 for (size_t ni = 0; ni < actual_n; ni++) {
                     float sum = 0.0f;
                     for (size_t g = 0; g < num_groups; g++) {
                         float b_scale = (float)B_scales[g * N + (n_start + ni)];
                         sum += (float)all_group_acc[g][mi][ni] * b_scale;
                     }
-                    acc[mi][ni] = sum * a_scale;
-                }
-            }
-
-            for (size_t mi = 0; mi < actual_m; mi++) {
-                for (size_t ni = 0; ni < actual_n; ni++) {
-                    C[(m_start + mi) * N + (n_start + ni)] = (__fp16)acc[mi][ni];
+                    C[(m_start + mi) * N + (n_start + ni)] = (__fp16)(sum * a_scale);
                 }
             }
         });

@@ -10,6 +10,7 @@ extern int test_index_main();
 extern int test_kernel_main();
 extern int test_kv_cache_main();
 extern int test_performance_main();
+extern int test_threading_main();
 
 @implementation AppDelegate
 
@@ -48,6 +49,7 @@ extern int test_performance_main();
         test_kernel_main();
         test_kv_cache_main();
         test_performance_main();
+        test_threading_main();
         exit(0);
     });
 

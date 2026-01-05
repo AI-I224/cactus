@@ -54,86 +54,147 @@ inline float32x4_t accum_f32_dot(float32x4_t acc, float32x4_t a_low, float32x4_t
 }
 
 namespace CactusThreading {
-    
+
     class ThreadPool {
     private:
+        static constexpr size_t MAX_WORKERS = 16;
+
+        struct WorkerQueue {
+            std::deque<std::function<void()>> tasks;
+            std::mutex mutex;
+        };
+
         std::vector<std::thread> workers;
-        std::queue<std::function<void()>> tasks;
-        std::mutex queue_mutex;
-        std::condition_variable condition;
+        std::vector<std::unique_ptr<WorkerQueue>> worker_queues;
+        size_t num_workers_;
+
         std::atomic<bool> stop{false};
         std::atomic<size_t> active_workers{0};
-        std::condition_variable finish_condition;
-        
-        void worker_thread() {
-            while (true) {
-                std::function<void()> task;
-                {
-                    std::unique_lock<std::mutex> lock(queue_mutex);
-                    condition.wait(lock, [this] { return stop || !tasks.empty(); });
-                    
-                    if (stop && tasks.empty()) return;
-                    
-                    task = std::move(tasks.front());
-                    tasks.pop();
-                    active_workers++;
+        std::atomic<size_t> total_tasks{0};
+        std::mutex wait_mutex;
+        std::condition_variable wait_condition;
+
+        bool try_steal(size_t thief_id, std::function<void()>& task) {
+            for (size_t i = 1; i < num_workers_; ++i) {
+                size_t victim = (thief_id + i) % num_workers_;
+                auto& victim_queue = *worker_queues[victim];
+
+                std::unique_lock<std::mutex> lock(victim_queue.mutex, std::try_to_lock);
+                if (lock.owns_lock() && !victim_queue.tasks.empty()) {
+                    task = std::move(victim_queue.tasks.front());
+                    victim_queue.tasks.pop_front();
+                    return true;
                 }
-                
-                task();
-                
-                active_workers--;
-                finish_condition.notify_all();
+            }
+            return false;
+        }
+
+        void worker_thread(size_t id) {
+            auto& my_queue = *worker_queues[id];
+
+            while (!stop.load(std::memory_order_relaxed)) {
+                std::function<void()> task;
+                bool got_task = false;
+
+                {
+                    std::lock_guard<std::mutex> lock(my_queue.mutex);
+                    if (!my_queue.tasks.empty()) {
+                        task = std::move(my_queue.tasks.back());
+                        my_queue.tasks.pop_back();
+                        got_task = true;
+                    }
+                }
+
+                if (!got_task) {
+                    got_task = try_steal(id, task);
+                }
+
+                if (got_task) {
+                    active_workers.fetch_add(1, std::memory_order_relaxed);
+                    task();
+                    active_workers.fetch_sub(1, std::memory_order_relaxed);
+
+                    if (total_tasks.fetch_sub(1, std::memory_order_acq_rel) == 1) {
+                        wait_condition.notify_all();
+                    }
+                } else {
+                    std::this_thread::sleep_for(std::chrono::microseconds(10));
+                }
             }
         }
-        
+
     public:
         explicit ThreadPool(size_t num_threads = std::thread::hardware_concurrency()) {
-            workers.reserve(num_threads);
-            for (size_t i = 0; i < num_threads; ++i) {
-                workers.emplace_back(&ThreadPool::worker_thread, this);
+            num_workers_ = std::min(num_threads, MAX_WORKERS);
+
+            worker_queues.reserve(num_workers_);
+            for (size_t i = 0; i < num_workers_; ++i) {
+                worker_queues.push_back(std::make_unique<WorkerQueue>());
+            }
+
+            workers.reserve(num_workers_);
+            for (size_t i = 0; i < num_workers_; ++i) {
+                workers.emplace_back(&ThreadPool::worker_thread, this, i);
             }
         }
-        
+
         ~ThreadPool() {
-            {
-                std::unique_lock<std::mutex> lock(queue_mutex);
-                stop = true;
-            }
-            condition.notify_all();
+            stop.store(true, std::memory_order_release);
             for (auto& worker : workers) {
                 worker.join();
             }
         }
-        
+
         template<typename F>
         auto enqueue(F&& f) -> std::future<decltype(f())> {
             using return_type = decltype(f());
-            
+
             auto task = std::make_shared<std::packaged_task<return_type()>>(
                 std::forward<F>(f)
             );
-            
+
             std::future<return_type> res = task->get_future();
+
+            size_t target = total_tasks.fetch_add(1, std::memory_order_relaxed) % num_workers_;
             {
-                std::unique_lock<std::mutex> lock(queue_mutex);
-                if (stop) throw std::runtime_error("enqueue on stopped ThreadPool");
-                
-                tasks.emplace([task](){ (*task)(); });
+                std::lock_guard<std::mutex> lock(worker_queues[target]->mutex);
+                worker_queues[target]->tasks.emplace_back([task](){ (*task)(); });
             }
-            condition.notify_one();
+
             return res;
         }
-        
+
+        template<typename F>
+        void enqueue_batch(size_t total_work, F task_func) {
+            if (total_work == 0) return;
+
+            const size_t num_tasks = std::min(num_workers_, total_work);
+            const size_t per_worker = total_work / num_tasks;
+            const size_t remainder = total_work % num_tasks;
+
+            total_tasks.fetch_add(num_tasks, std::memory_order_relaxed);
+
+            for (size_t w = 0; w < num_tasks; ++w) {
+                size_t start = w * per_worker + std::min(w, remainder);
+                size_t end = start + per_worker + (w < remainder ? 1 : 0);
+
+                std::lock_guard<std::mutex> lock(worker_queues[w]->mutex);
+                worker_queues[w]->tasks.emplace_back(
+                    [=]() { task_func(start, end); }
+                );
+            }
+        }
+
         void wait_all() {
-            std::unique_lock<std::mutex> lock(queue_mutex);
-            finish_condition.wait(lock, [this] { 
-                return tasks.empty() && active_workers == 0; 
+            std::unique_lock<std::mutex> lock(wait_mutex);
+            wait_condition.wait(lock, [this] {
+                return total_tasks.load(std::memory_order_acquire) == 0;
             });
         }
-        
-        size_t num_workers() const { return workers.size(); }
+
+        size_t num_workers() const { return num_workers_; }
     };
-    
+
     inline ThreadPool& get_thread_pool() {
         static ThreadPool pool;
         return pool;
@@ -158,7 +219,7 @@ namespace CactusThreading {
     struct Thresholds {
         #if defined(__ANDROID__)
         static constexpr ParallelConfig ATTENTION{64, 32};
-        static constexpr ParallelConfig GEMM_TILED{32, 16};
+        static constexpr ParallelConfig GEMM_TILED{10000, 5000};
         static constexpr ParallelConfig ELEMENT_WISE{5000, 2500};
         static constexpr ParallelConfig AXIS_REDUCE{1000, 500};
         static constexpr ParallelConfig ALL_REDUCE{10000, 5000};
@@ -174,6 +235,19 @@ namespace CactusThreading {
         static constexpr ParallelConfig SCALAR_EXPENSIVE{2500, 1250};
         #endif
     };
+
+    inline ParallelConfig& get_gemm_config_override() {
+        static ParallelConfig config = Thresholds::GEMM_TILED;
+        return config;
+    }
+
+    inline void set_gemm_config(size_t min_work_gate, size_t work_per_thread) {
+        get_gemm_config_override() = ParallelConfig{min_work_gate, work_per_thread};
+    }
+
+    inline void reset_gemm_config() {
+        get_gemm_config_override() = Thresholds::GEMM_TILED;
+    }
     
     class TaskHandle {
     private:
@@ -300,19 +374,34 @@ namespace CactusThreading {
         size_t num_col_tiles = (cols + tile_cols - 1) / tile_cols;
         size_t total_tiles = num_row_tiles * num_col_tiles;
 
-        parallel_for(total_tiles, Thresholds::GEMM_TILED, [=](size_t start_tile, size_t end_tile) {
-            for (size_t tile_idx = start_tile; tile_idx < end_tile; ++tile_idx) {
+        const auto& config = get_gemm_config_override();
+        if (total_tiles < config.min_work_gate) {
+            for (size_t tile_idx = 0; tile_idx < total_tiles; ++tile_idx) {
                 size_t tile_row = tile_idx / num_col_tiles;
                 size_t tile_col = tile_idx % num_col_tiles;
-
                 size_t row_start = tile_row * tile_rows;
                 size_t row_end = std::min(row_start + tile_rows, rows);
                 size_t col_start = tile_col * tile_cols;
                 size_t col_end = std::min(col_start + tile_cols, cols);
-
                 work_func(row_start, row_end, col_start, col_end);
             }
-        });
+            return;
+        }
+
+        auto& pool = get_thread_pool();
+        pool.enqueue_batch(total_tiles,
+            [=](size_t start_tile, size_t end_tile) {
+                for (size_t tile_idx = start_tile; tile_idx < end_tile; ++tile_idx) {
+                    size_t tile_row = tile_idx / num_col_tiles;
+                    size_t tile_col = tile_idx % num_col_tiles;
+                    size_t row_start = tile_row * tile_rows;
+                    size_t row_end = std::min(row_start + tile_rows, rows);
+                    size_t col_start = tile_col * tile_cols;
+                    size_t col_end = std::min(col_start + tile_cols, cols);
+                    work_func(row_start, row_end, col_start, col_end);
+                }
+            });
+        pool.wait_all();
     }
 }
 
