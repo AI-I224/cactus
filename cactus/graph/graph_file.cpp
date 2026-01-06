@@ -1,4 +1,5 @@
 #include "graph.h"
+#include "../kernel/kernel.h"
 #include <fstream>
 #include <stdexcept>
 #include <sys/mman.h>
@@ -176,10 +177,12 @@ GraphFile::MappedFile::MappedFile(MappedFile&& other) noexcept
       data_offset_(other.data_offset_), shape_(std::move(other.shape_)),
       precision_(other.precision_), byte_size_(other.byte_size_),
       group_size_(other.group_size_), num_groups_(other.num_groups_),
-      scales_offset_(other.scales_offset_) {
+      scales_offset_(other.scales_offset_), is_int4_(other.is_int4_),
+      unpacked_int4_data_(std::move(other.unpacked_int4_data_)) {
     other.fd_ = -1;
     other.mapped_data_ = nullptr;
     other.file_size_ = 0;
+    other.is_int4_ = false;
 }
 
 GraphFile::MappedFile& GraphFile::MappedFile::operator=(MappedFile&& other) noexcept {
@@ -201,10 +204,13 @@ GraphFile::MappedFile& GraphFile::MappedFile::operator=(MappedFile&& other) noex
         group_size_ = other.group_size_;
         num_groups_ = other.num_groups_;
         scales_offset_ = other.scales_offset_;
+        is_int4_ = other.is_int4_;
+        unpacked_int4_data_ = std::move(other.unpacked_int4_data_);
 
         other.fd_ = -1;
         other.mapped_data_ = nullptr;
         other.file_size_ = 0;
+        other.is_int4_ = false;
     }
     return *this;
 }
@@ -226,11 +232,36 @@ const void* GraphFile::MappedFile::scales_data() const {
 }
 
 
+void GraphFile::MappedFile::unpack_int4_if_needed() const {
+    if (!is_int4_ || unpacked_int4_data_) {
+        return;  // Not INT4, or already unpacked
+    }
+
+    // Calculate unpacked size (2x packed size)
+    size_t unpacked_count = byte_size_ * 2;
+    unpacked_int4_data_ = std::make_unique<int8_t[]>(unpacked_count);
+
+    // Get packed data from mmap
+    const uint8_t* packed = reinterpret_cast<const uint8_t*>(
+        static_cast<const char*>(mapped_data_) + data_offset_);
+
+    // Unpack INT4 to INT8
+    cactus_unpack_int4_to_int8(packed, unpacked_int4_data_.get(), unpacked_count);
+}
+
 void* GraphFile::MappedFile::data() {
+    if (is_int4_) {
+        unpack_int4_if_needed();
+        return unpacked_int4_data_.get();
+    }
     return static_cast<char*>(mapped_data_) + data_offset_;
 }
 
 const void* GraphFile::MappedFile::data() const {
+    if (is_int4_) {
+        unpack_int4_if_needed();
+        return unpacked_int4_data_.get();
+    }
     return static_cast<const char*>(mapped_data_) + data_offset_;
 }
 
@@ -240,13 +271,18 @@ const T* GraphFile::MappedFile::typed_data() const {
 }
 
 GraphFile::LoadedNode GraphFile::MappedFile::load_into_graph(CactusGraph& graph) const {
-    size_t node_id = graph.input(shape_, precision_);
-    graph.set_external_input(node_id, const_cast<void*>(data()), precision_);
-    if (precision_ == Precision::INT8 && group_size_ > 0) {
+    Precision eff_prec = effective_precision();
+
+    size_t node_id = graph.input(shape_, eff_prec);
+    graph.set_external_input(node_id, const_cast<void*>(data()), eff_prec);
+
+    if ((eff_prec == Precision::INT8) && group_size_ > 0) {
         graph.set_grouped_scales(node_id, group_size_, num_groups_,
                                  const_cast<void*>(scales_data()));
     }
-    return {node_id, shape_, precision_, byte_size_};
+
+    size_t reported_byte_size = is_int4_ ? byte_size_ * 2 : byte_size_;
+    return {node_id, shape_, eff_prec, reported_byte_size};
 }
 
 void GraphFile::MappedFile::parse_header() {
@@ -276,14 +312,16 @@ void GraphFile::MappedFile::parse_header() {
     uint32_t prec_val = *reinterpret_cast<const uint32_t*>(ptr + offset);
     precision_ = static_cast<Precision>(prec_val);
     offset += sizeof(uint32_t);
-    
+
+    is_int4_ = (precision_ == Precision::INT4);
+
     uint64_t size_val = *reinterpret_cast<const uint64_t*>(ptr + offset);
     byte_size_ = static_cast<size_t>(size_val);
     offset += sizeof(uint64_t);
-    
-    if (precision_ == Precision::INT8) {
+
+    if (precision_ == Precision::INT8 || precision_ == Precision::INT4) {
         if (offset + sizeof(uint32_t) + sizeof(uint64_t) > file_size_) {
-            throw std::runtime_error("File corrupted: missing group-wise quantization parameters for INT8 tensor");
+            throw std::runtime_error("File corrupted: missing group-wise quantization parameters for quantized tensor");
         }
         group_size_ = *reinterpret_cast<const uint32_t*>(ptr + offset);
         offset += sizeof(uint32_t);
@@ -293,7 +331,6 @@ void GraphFile::MappedFile::parse_header() {
 
         data_offset_ = offset;
 
-        // Only validate scales if this is a grouped INT8 tensor
         if (group_size_ > 0 && num_groups_ > 0) {
             scales_offset_ = data_offset_ + byte_size_;
             size_t N = shape_.size() >= 1 ? shape_[0] : 1;
@@ -310,6 +347,7 @@ void GraphFile::MappedFile::parse_header() {
         num_groups_ = 0;
         scales_offset_ = 0;
         data_offset_ = offset;
+        is_int4_ = false;
     }
 
     if (data_offset_ + byte_size_ > file_size_) {

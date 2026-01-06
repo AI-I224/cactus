@@ -13,7 +13,7 @@ GROUP_SIZE = 128
 
 
 def save_tensor_with_header(tensor, output_path, precision='FP16', transpose=False, stats_tracker=None, args=None, model_type=None):
-    """Save a tensor to binary format with header metadata and group-wise INT8 quantization."""
+    """Save a tensor to binary format with header metadata and group-wise INT8/INT4 quantization."""
     if torch is not None and isinstance(tensor, torch.Tensor):
         data = tensor.detach().cpu().numpy()
     else:
@@ -25,7 +25,7 @@ def save_tensor_with_header(tensor, output_path, precision='FP16', transpose=Fal
         data = data + 1.0
         original_data = data.copy()
 
-    if precision == 'INT8':
+    if precision in ('INT8', 'INT4'):
         filename = output_path.name
         if any(x in filename for x in ['norm', 'bias', 'vision']) or (model_type == 'bert' and 'embedding' in filename):
             precision = 'FP16'
@@ -120,7 +120,7 @@ def save_tensor_with_header(tensor, output_path, precision='FP16', transpose=Fal
             f.write(struct.pack('<I', ndim))
             for dim in shape:
                 f.write(struct.pack('<Q', dim))
-            f.write(struct.pack('<I', 0))
+            f.write(struct.pack('<I', 0))  # Precision flag 0 = INT8
             byte_size = quantized_flat.size
             f.write(struct.pack('<Q', byte_size))
             f.write(struct.pack('<I', GROUP_SIZE))
@@ -133,6 +133,75 @@ def save_tensor_with_header(tensor, output_path, precision='FP16', transpose=Fal
             stats_tracker['total_parameters'] += original_data.size
 
         return
+
+    if precision == 'INT4':
+        if len(shape) == 2:
+            N, K = shape
+
+            if K % GROUP_SIZE != 0:
+                pad_k = GROUP_SIZE - (K % GROUP_SIZE)
+                data = np.pad(data, ((0, 0), (0, pad_k)), mode='constant', constant_values=0)
+                original_data = np.pad(original_data, ((0, 0), (0, pad_k)), mode='constant', constant_values=0)
+                K = data.shape[1]
+                shape = [N, K]
+
+            num_groups = K // GROUP_SIZE
+            data_grouped = data.reshape(N, num_groups, GROUP_SIZE)
+
+            group_abs_max = np.max(np.abs(data_grouped), axis=2)
+            scales = (group_abs_max / 7.0).astype(np.float32)
+            scales = np.maximum(scales, 1e-10)
+
+            quantized = np.clip(
+                np.round(data_grouped / scales[:, :, np.newaxis]),
+                -8, 7
+            ).astype(np.int8)
+            quantized_flat = quantized.reshape(N, K)
+
+            # Pack two INT4 values per byte: low nibble = first, high nibble = second
+            # K must be even after padding
+            packed = np.zeros((N, K // 2), dtype=np.uint8)
+            for i in range(0, K, 2):
+                low = quantized_flat[:, i] & 0x0F     
+                high = (quantized_flat[:, i+1] & 0x0F) << 4
+                packed[:, i // 2] = (low | high).astype(np.uint8)
+
+            dequantized = (quantized.astype(np.float32) * scales[:, :, np.newaxis]).reshape(N, K)
+            mse_error = np.mean((original_data - dequantized) ** 2)
+            snr_db = 10 * np.log10(np.var(original_data) / mse_error) if mse_error > 0 else float('inf')
+            original_flat = original_data.flatten()
+            dequant_flat = dequantized.flatten()
+            cos_sim = np.dot(original_flat, dequant_flat) / (np.linalg.norm(original_flat) * np.linalg.norm(dequant_flat) + 1e-10)
+
+            scales_fp16 = scales.T.astype(np.float16)
+
+            if stats_tracker:
+                stats_tracker['quantized_tensors'] += 1
+                stats_tracker['quantized_parameters'] += original_data.size
+                stats_tracker['mse_values'].append(mse_error)
+                stats_tracker['snr_values'].append(snr_db)
+                stats_tracker['cos_sim_values'].append(cos_sim)
+
+            with open(output_path, 'wb') as f:
+                ndim = len(shape)
+                f.write(struct.pack('<I', ndim))
+                for dim in shape:
+                    f.write(struct.pack('<Q', dim))
+                f.write(struct.pack('<I', 3)) 
+                byte_size = packed.size  
+                f.write(struct.pack('<Q', byte_size))
+                f.write(struct.pack('<I', GROUP_SIZE))
+                f.write(struct.pack('<Q', num_groups))
+                f.write(packed.tobytes())
+                f.write(scales_fp16.tobytes())
+
+            if stats_tracker:
+                stats_tracker['total_tensors'] += 1
+                stats_tracker['total_parameters'] += original_data.size
+
+            return
+        else:
+            precision = 'FP16'
 
     data = data.astype(np.float16)
 

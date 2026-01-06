@@ -586,7 +586,7 @@ size_t CactusGraph::mmap_embeddings(const std::string& filename) {
         throw std::runtime_error("Memory-mapped embeddings must be 2D [vocab_size, embedding_dim]");
     }
 
-    Precision precision = mapped_file->precision();
+    Precision precision = mapped_file->effective_precision();
 
     size_t node_id = input(shape, precision);
     set_external_input(node_id, const_cast<void*>(mapped_file->data()), precision);
@@ -609,7 +609,7 @@ size_t CactusGraph::mmap_weights(const std::string& filename) {
     auto mapped_file = std::make_unique<GraphFile::MappedFile>(filename);
 
     const auto& shape = mapped_file->shape();
-    Precision precision = mapped_file->precision();
+    Precision precision = mapped_file->effective_precision();
 
     size_t node_id = input(shape, precision);
     set_external_input(node_id, const_cast<void*>(mapped_file->data()), precision);
@@ -644,24 +644,30 @@ void CactusGraph::set_grouped_scales(size_t node_id, size_t group_size, size_t n
 
 size_t CactusGraph::embedding(const std::string& filename, size_t indices) {
     auto mapped_file = std::make_unique<GraphFile::MappedFile>(filename);
-    
+
     const auto& shape = mapped_file->shape();
     if (shape.size() != 2) {
         throw std::runtime_error("Embedding file must contain 2D tensor [vocab_size, hidden_dim]");
     }
-    
-    Precision precision = mapped_file->precision();
+
+    Precision precision = mapped_file->effective_precision();
     size_t embeddings_node = input(shape, precision);
     set_external_input(embeddings_node, const_cast<void*>(mapped_file->data()), precision);
+
+    if (precision == Precision::INT8 && mapped_file->group_size() > 0) {
+        set_grouped_scales(embeddings_node, mapped_file->group_size(), mapped_file->num_groups(),
+                          const_cast<void*>(mapped_file->scales_data()));
+    }
+
     mapped_files_.push_back(std::move(mapped_file));
-    
+
     const auto& idx_shape = get_output_buffer(indices).shape;
     std::vector<size_t> output_shape = idx_shape;
-    output_shape.push_back(shape[1]);  
-    
+    output_shape.push_back(shape[1]);
+
     OpParams params;
     params.output_precision = (precision == Precision::INT8) ? Precision::FP16 : precision;
-    
+
     return add_node(OpType::EMBEDDING, {embeddings_node, indices}, output_shape, params);
 }
 

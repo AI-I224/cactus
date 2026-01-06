@@ -97,9 +97,10 @@ namespace GraphFile {
 }
 
 enum class Precision {
-    INT8, 
+    INT8,
     FP16,
-    FP32
+    FP32,
+    INT4 
 };
 
 enum class ComputeBackend {
@@ -123,27 +124,38 @@ enum class OpType {
 };
 
 struct PrecisionTraits {
+    // Returns in-memory element size (INT4 unpacks to INT8, so returns 1)
     static constexpr size_t size_of(Precision prec) {
         switch (prec) {
             case Precision::INT8: return 1;
             case Precision::FP16: return 2;
             case Precision::FP32: return 4;
+            case Precision::INT4: return 1; 
         }
         return 1;
     }
-    
+
+    static constexpr size_t packed_size_of(Precision prec, size_t count) {
+        switch (prec) {
+            case Precision::INT4: return (count + 1) / 2;  
+            default: return count * size_of(prec);
+        }
+    }
+
     static constexpr bool is_integer(Precision prec) {
         switch (prec) {
             case Precision::INT8: return true;
+            case Precision::INT4: return true;
             case Precision::FP16: return false;
             case Precision::FP32: return false;
         }
         return true;
     }
-    
+
     static constexpr bool is_floating_point(Precision prec) {
         switch (prec) {
             case Precision::INT8: return false;
+            case Precision::INT4: return false;
             case Precision::FP16: return true;
             case Precision::FP32: return true;
         }
@@ -263,7 +275,6 @@ struct OpParams {
     std::vector<float> bias_values;
     std::vector<uint32_t> bias_indices;
 
-    // INT8 hybrid attention: external cache pointers
     const int8_t* cached_keys_int8 = nullptr;
     const int8_t* cached_values_int8 = nullptr;
     const float* cached_k_scales = nullptr;
@@ -350,7 +361,7 @@ public:
     size_t precision_cast(size_t input, Precision target_precision);
     
     size_t add(size_t input1, size_t input2);
-    size_t add_clipped(size_t input1, size_t input2);  // For FP16 residual connections (Gemma)
+    size_t add_clipped(size_t input1, size_t input2);  
     size_t subtract(size_t input1, size_t input2);
     size_t multiply(size_t input1, size_t input2);
     size_t divide(size_t input1, size_t input2);
@@ -400,7 +411,6 @@ public:
     size_t attention(size_t query, size_t key, size_t value, float scale, size_t position_offset, ComputeBackend backend = ComputeBackend::CPU);
     size_t attention(size_t query, size_t key, size_t value, float scale, size_t position_offset, size_t window_size, ComputeBackend backend = ComputeBackend::CPU);
 
-    // Hybrid INT8/FP16 attention: cached K/V as INT8 with scales, new K/V as FP16
     size_t attention_int8_hybrid(size_t query, size_t key_new, size_t value_new, float scale, size_t position_offset,
                                  const int8_t* cached_keys, const int8_t* cached_values,
                                  const float* k_scales, const float* v_scales,
@@ -468,11 +478,15 @@ namespace GraphFile {
 
         const std::vector<size_t>& shape() const;
         Precision precision() const;
+        Precision effective_precision() const {
+            return is_int4_ ? Precision::INT8 : precision_;
+        }
         size_t byte_size() const;
 
         size_t group_size() const { return group_size_; }
         size_t num_groups() const { return num_groups_; }
         const void* scales_data() const;
+        bool is_int4() const { return is_int4_; }
 
         void* data();
         const void* data() const;
@@ -492,7 +506,10 @@ namespace GraphFile {
         size_t group_size_ = 0;
         size_t num_groups_ = 0;
         size_t scales_offset_ = 0;
+        bool is_int4_ = false; 
+        mutable std::unique_ptr<int8_t[]> unpacked_int4_data_;  
         void parse_header();
+        void unpack_int4_if_needed() const;  
     };
 
     MappedFile mmap_load(const std::string& filename);

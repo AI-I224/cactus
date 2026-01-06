@@ -155,4 +155,6 @@ inline size_t kv_scales_count(size_t seq_len, size_t kv_heads, size_t head_dim, 
     return seq_len * kv_heads * num_groups;
 }
 
+void cactus_unpack_int4_to_int8(const uint8_t* packed, int8_t* unpacked, size_t unpacked_count);
+
 #endif
