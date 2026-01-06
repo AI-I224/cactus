@@ -18,9 +18,9 @@ struct BenchResult {
 };
 
 std::vector<BenchResult> benchmark_gemm_threading() {
-    const std::vector<size_t> M_values = {1, 8, 64, 128, 256, 1024};
-    const std::vector<size_t> K_values = {256, 512, 1024};
-    const std::vector<size_t> N_values = {1024, 2048};
+    const std::vector<size_t> M_values = {1, 8, 64, 256, 1024};
+    const std::vector<size_t> K_values = {256, 1024};
+    const std::vector<size_t> N_values = {1024};
     const int iterations = 5;
     const size_t group_size = 128;
 

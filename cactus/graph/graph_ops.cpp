@@ -633,7 +633,6 @@ void compute_fused_node(GraphNode& node, const std::vector<std::unique_ptr<Graph
                     const __fp16* scales = W.scales_as_fp16();
                     const size_t K_total = W1 * K;
                     const size_t group_size = W.group_size;
-                    const size_t num_groups = W.num_groups;
 
                     for (size_t row = 0; row < W0; ++row) {
                         for (size_t col = 0; col < K_total; ++col) {
@@ -707,7 +706,6 @@ void compute_fused_node(GraphNode& node, const std::vector<std::unique_ptr<Graph
                         const __fp16* scales = W.scales_as_fp16();
                         const size_t K_total = C_in * K;
                         const size_t group_size = W.group_size;
-                        const size_t num_groups = W.num_groups;
 
                         for (size_t row = 0; row < C_out; ++row) {
                             for (size_t col = 0; col < K_total; ++col) {

@@ -382,7 +382,6 @@ void compute_precision_cast_node(GraphNode& node, const std::vector<std::unique_
             float* dst = node.output_buffer.data_as<float>();
             const __fp16* scales = input_node.output_buffer.scales_as_fp16();
             size_t group_size = input_node.output_buffer.group_size;
-            size_t num_groups = input_node.output_buffer.num_groups;
 
             const auto& shape = input_node.output_buffer.shape;
             if (shape.size() == 2) {
@@ -421,7 +420,6 @@ void compute_precision_cast_node(GraphNode& node, const std::vector<std::unique_
             __fp16* dst = node.output_buffer.data_as<__fp16>();
             const __fp16* scales = input_node.output_buffer.scales_as_fp16();
             size_t group_size = input_node.output_buffer.group_size;
-            size_t num_groups = input_node.output_buffer.num_groups;
 
             const auto& shape = input_node.output_buffer.shape;
             if (shape.size() == 2) {
