@@ -1,5 +1,6 @@
 #include "graph.h"
 #include "../kernel/kernel.h"
+#include "../kernel/kernel_utils.h"
 #include <cstring>
 #include <vector>
 #include <stdexcept>
@@ -16,6 +17,10 @@ namespace {
     thread_local std::vector<__fp16> transpose_buffer_fp16;
     thread_local std::vector<int8_t> quant_activation_buffer;
     thread_local std::vector<float> quant_scales_buffer;
+
+    thread_local const __fp16* cached_quant_src = nullptr;
+    thread_local size_t cached_quant_M = 0;
+    thread_local size_t cached_quant_K = 0;
 
     void ensure_transpose_buffer_fp16(size_t required_size) {
         if (transpose_buffer_fp16.size() < required_size) {
@@ -34,13 +39,37 @@ namespace {
     }
 
     void quantize_activations_fp16_to_int8(const __fp16* src, int8_t* dst, float* scales, size_t M, size_t K) {
-        for (size_t m = 0; m < M; m++) {
-            float max_abs = cactus_fp16_max_abs(src + m * K, K);
-            float scale = max_abs / 127.0f;
-            if (scale < 1e-10f) scale = 1e-10f;
-            scales[m] = scale;
-            cactus_fp16_to_int8(src + m * K, dst + m * K, K, scale);
+       
+        if (src == cached_quant_src && M == cached_quant_M && K == cached_quant_K) {
+            return;
         }
+
+        constexpr size_t PARALLEL_THRESHOLD = 16;
+
+        if (M >= PARALLEL_THRESHOLD) {
+            CactusThreading::parallel_for(M, CactusThreading::Thresholds::ELEMENT_WISE,
+                [src, dst, scales, K](size_t m_start, size_t m_end) {
+                    for (size_t m = m_start; m < m_end; m++) {
+                        float max_abs = cactus_fp16_max_abs(src + m * K, K);
+                        float scale = max_abs / 127.0f;
+                        if (scale < 1e-10f) scale = 1e-10f;
+                        scales[m] = scale;
+                        cactus_fp16_to_int8(src + m * K, dst + m * K, K, scale);
+                    }
+                });
+        } else {
+            for (size_t m = 0; m < M; m++) {
+                float max_abs = cactus_fp16_max_abs(src + m * K, K);
+                float scale = max_abs / 127.0f;
+                if (scale < 1e-10f) scale = 1e-10f;
+                scales[m] = scale;
+                cactus_fp16_to_int8(src + m * K, dst + m * K, K, scale);
+            }
+        }
+
+        cached_quant_src = src;
+        cached_quant_M = M;
+        cached_quant_K = K;
     }
 }
 
@@ -48,6 +77,9 @@ void shrink_thread_local_buffers() {
     std::vector<__fp16>().swap(transpose_buffer_fp16);
     std::vector<int8_t>().swap(quant_activation_buffer);
     std::vector<float>().swap(quant_scales_buffer);
+    cached_quant_src = nullptr;
+    cached_quant_M = 0;
+    cached_quant_K = 0;
 }
 
 void compute_reduce_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map) {
