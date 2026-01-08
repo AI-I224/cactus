@@ -214,10 +214,21 @@ void benchmark_matmul_int8_grouped(TestUtils::TestRunner& runner, const Benchmar
             B_scales[i] = static_cast<__fp16>(0.01f + (static_cast<float>(rand()) / RAND_MAX) * 0.05f);
         }
 
+        // Pre-quantize A to INT8 + scales
+        std::vector<int8_t> A_quant(M * K_aligned);
+        std::vector<float> A_scales(M);
+        for (size_t m = 0; m < M; ++m) {
+            float max_abs = cactus_fp16_max_abs(A.data() + m * K_aligned, K_aligned);
+            float scale = max_abs / 127.0f;
+            if (scale < 1e-10f) scale = 1e-10f;
+            A_scales[m] = scale;
+            cactus_fp16_to_int8(A.data() + m * K_aligned, A_quant.data() + m * K_aligned, K_aligned, scale);
+        }
+
         std::vector<__fp16> C(M * N);
 
         double time_ms = time_operation<__fp16>([&]() {
-            cactus_matmul_int8(A.data(), B.data(), B_scales.data(), C.data(),
+            cactus_matmul_int8(A_quant.data(), A_scales.data(), B.data(), B_scales.data(), C.data(),
                                        M, K_aligned, N, group_size);
         }, config.iterations);
 
@@ -260,10 +271,21 @@ void benchmark_matmul_int4_grouped(TestUtils::TestRunner& runner, const Benchmar
             B_scales[i] = static_cast<__fp16>(0.01f + (static_cast<float>(rand()) / RAND_MAX) * 0.05f);
         }
 
+        // Pre-quantize A to INT8 + scales
+        std::vector<int8_t> A_quant(M * K_aligned);
+        std::vector<float> A_scales(M);
+        for (size_t m = 0; m < M; ++m) {
+            float max_abs = cactus_fp16_max_abs(A.data() + m * K_aligned, K_aligned);
+            float scale = max_abs / 127.0f;
+            if (scale < 1e-10f) scale = 1e-10f;
+            A_scales[m] = scale;
+            cactus_fp16_to_int8(A.data() + m * K_aligned, A_quant.data() + m * K_aligned, K_aligned, scale);
+        }
+
         std::vector<__fp16> C(M * N);
 
         double time_ms = time_operation<__fp16>([&]() {
-            cactus_matmul_int4(A.data(), B_packed.data(), B_scales.data(), C.data(),
+            cactus_matmul_int4(A_quant.data(), A_scales.data(), B_packed.data(), B_scales.data(), C.data(),
                                M, K_aligned, N, group_size);
         }, config.iterations);
 

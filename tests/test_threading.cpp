@@ -86,6 +86,17 @@ std::vector<BenchResult> benchmark_gemm_threading() {
                     B_scales[i] = static_cast<__fp16>(0.01f + std::abs(float_dist(gen)) * 0.05f);
                 }
 
+                // Pre-quantize A to INT8 + scales
+                std::vector<int8_t> A_quant(M * K_aligned);
+                std::vector<float> A_scales(M);
+                for (size_t m = 0; m < M; ++m) {
+                    float max_abs = cactus_fp16_max_abs(A.data() + m * K_aligned, K_aligned);
+                    float scale = max_abs / 127.0f;
+                    if (scale < 1e-10f) scale = 1e-10f;
+                    A_scales[m] = scale;
+                    cactus_fp16_to_int8(A.data() + m * K_aligned, A_quant.data() + m * K_aligned, K_aligned, scale);
+                }
+
                 BenchResult best = {M, K, N, total_tiles, 0, std::numeric_limits<double>::max(), 0};
 
                 std::cout << "[" << dim_idx << "/" << total_dims << "] "
@@ -97,12 +108,12 @@ std::vector<BenchResult> benchmark_gemm_threading() {
                 for (size_t num_threads : thread_counts) {
                     CactusThreading::set_gemm_threads(num_threads);
 
-                    cactus_matmul_int8(A.data(), B.data(), B_scales.data(), C.data(),
+                    cactus_matmul_int8(A_quant.data(), A_scales.data(), B.data(), B_scales.data(), C.data(),
                                      M, K_aligned, N, group_size);
 
                     auto start = std::chrono::high_resolution_clock::now();
                     for (int i = 0; i < iterations; ++i) {
-                        cactus_matmul_int8(A.data(), B.data(), B_scales.data(), C.data(),
+                        cactus_matmul_int8(A_quant.data(), A_scales.data(), B.data(), B_scales.data(), C.data(),
                                          M, K_aligned, N, group_size);
                     }
                     auto end = std::chrono::high_resolution_clock::now();

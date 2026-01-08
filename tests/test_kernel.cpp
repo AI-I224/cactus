@@ -241,9 +241,20 @@ bool test_matmul_int8_grouped_correctness() {
         }
     }
 
+    // Pre-quantize A to INT8 + scales
+    std::vector<int8_t> A_quant(M * K);
+    std::vector<float> A_scales(M);
+    for (size_t m = 0; m < M; ++m) {
+        float max_abs = cactus_fp16_max_abs(A.data() + m * K, K);
+        float scale = max_abs / 127.0f;
+        if (scale < 1e-10f) scale = 1e-10f;
+        A_scales[m] = scale;
+        cactus_fp16_to_int8(A.data() + m * K, A_quant.data() + m * K, K, scale);
+    }
+
     std::vector<__fp16> C(M * N);
 
-    cactus_matmul_int8(A.data(), B.data(), B_scales.data(), C.data(),
+    cactus_matmul_int8(A_quant.data(), A_scales.data(), B.data(), B_scales.data(), C.data(),
                                M, K, N, group_size);
 
     std::vector<float> C_ref(M * N, 0.0f);
@@ -332,9 +343,20 @@ bool test_matmul_int4_grouped_correctness() {
         }
     }
 
+    // Pre-quantize A to INT8 + scales
+    std::vector<int8_t> A_quant(M * K);
+    std::vector<float> A_scales(M);
+    for (size_t m = 0; m < M; ++m) {
+        float max_abs = cactus_fp16_max_abs(A.data() + m * K, K);
+        float scale = max_abs / 127.0f;
+        if (scale < 1e-10f) scale = 1e-10f;
+        A_scales[m] = scale;
+        cactus_fp16_to_int8(A.data() + m * K, A_quant.data() + m * K, K, scale);
+    }
+
     std::vector<__fp16> C(M * N);
 
-    cactus_matmul_int4(A.data(), B_packed.data(), B_scales.data(), C.data(),
+    cactus_matmul_int4(A_quant.data(), A_scales.data(), B_packed.data(), B_scales.data(), C.data(),
                        M, K, N, group_size);
 
     std::vector<float> C_ref(M * N, 0.0f);

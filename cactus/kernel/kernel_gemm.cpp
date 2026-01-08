@@ -5,24 +5,6 @@
 #include <algorithm>
 #include <cmath>
 
-namespace {
-    constexpr size_t CACHE_LINE = 64;
-
-    struct alignas(CACHE_LINE) PaddedRowData {
-        float scale;
-        std::atomic<uint8_t> state;
-    };
-
-    struct GemmBuffers {
-        std::vector<int8_t> A_quant;
-        std::unique_ptr<PaddedRowData[]> row_data;
-        size_t row_data_size = 0;
-    };
-    static GemmBuffers gemm_buffers;
-
-    enum class RowState : uint8_t { NOT_STARTED = 0, IN_PROGRESS = 1, DONE = 2 };
-}
-
 static void cactus_matmul_f16_worker(
     const __fp16* a,
     const __fp16* b_transposed,
@@ -162,84 +144,9 @@ void cactus_matmul_f16(
         });
 }
 
-static inline float quantize_row_fp16_to_int8(const __fp16* src, int8_t* dst, size_t K) {
-    float32x4_t max_vec0 = vdupq_n_f32(0.0f);
-    float32x4_t max_vec1 = vdupq_n_f32(0.0f);
-    size_t k = 0;
-
-    for (; k + 16 <= K; k += 16) {
-        float16x8_t v0 = vld1q_f16(src + k);
-        float16x8_t v1 = vld1q_f16(src + k + 8);
-        max_vec0 = vmaxq_f32(max_vec0, vabsq_f32(vcvt_f32_f16(vget_low_f16(v0))));
-        max_vec0 = vmaxq_f32(max_vec0, vabsq_f32(vcvt_f32_f16(vget_high_f16(v0))));
-        max_vec1 = vmaxq_f32(max_vec1, vabsq_f32(vcvt_f32_f16(vget_low_f16(v1))));
-        max_vec1 = vmaxq_f32(max_vec1, vabsq_f32(vcvt_f32_f16(vget_high_f16(v1))));
-    }
-
-    max_vec0 = vmaxq_f32(max_vec0, max_vec1);
-
-    for (; k + 8 <= K; k += 8) {
-        float16x8_t vals = vld1q_f16(src + k);
-        max_vec0 = vmaxq_f32(max_vec0, vabsq_f32(vcvt_f32_f16(vget_low_f16(vals))));
-        max_vec0 = vmaxq_f32(max_vec0, vabsq_f32(vcvt_f32_f16(vget_high_f16(vals))));
-    }
-
-    float max_abs = vmaxvq_f32(max_vec0);
-
-    for (; k < K; k++) {
-        float val = fabsf((float)src[k]);
-        if (val > max_abs) max_abs = val;
-    }
-
-    float scale = max_abs / 127.0f;
-    if (scale < 1e-10f) scale = 1e-10f;
-    float inv_scale = 1.0f / scale;
-    float32x4_t inv_scale_vec = vdupq_n_f32(inv_scale);
-
-    k = 0;
-
-    for (; k + 16 <= K; k += 16) {
-        float16x8_t v0 = vld1q_f16(src + k);
-        float16x8_t v1 = vld1q_f16(src + k + 8);
-
-        int32x4_t i0 = vcvtnq_s32_f32(vmulq_f32(vcvt_f32_f16(vget_low_f16(v0)), inv_scale_vec));
-        int32x4_t i1 = vcvtnq_s32_f32(vmulq_f32(vcvt_f32_f16(vget_high_f16(v0)), inv_scale_vec));
-        int32x4_t i2 = vcvtnq_s32_f32(vmulq_f32(vcvt_f32_f16(vget_low_f16(v1)), inv_scale_vec));
-        int32x4_t i3 = vcvtnq_s32_f32(vmulq_f32(vcvt_f32_f16(vget_high_f16(v1)), inv_scale_vec));
-
-        int16x4_t s0 = vqmovn_s32(i0);
-        int16x4_t s1 = vqmovn_s32(i1);
-        int16x4_t s2 = vqmovn_s32(i2);
-        int16x4_t s3 = vqmovn_s32(i3);
-        int16x8_t s01 = vcombine_s16(s0, s1);
-        int16x8_t s23 = vcombine_s16(s2, s3);
-        int8x8_t r0 = vqmovn_s16(s01);
-        int8x8_t r1 = vqmovn_s16(s23);
-        vst1q_s8(dst + k, vcombine_s8(r0, r1));
-    }
-
-    for (; k + 8 <= K; k += 8) {
-        float16x8_t vals = vld1q_f16(src + k);
-        int32x4_t i0 = vcvtnq_s32_f32(vmulq_f32(vcvt_f32_f16(vget_low_f16(vals)), inv_scale_vec));
-        int32x4_t i1 = vcvtnq_s32_f32(vmulq_f32(vcvt_f32_f16(vget_high_f16(vals)), inv_scale_vec));
-        int16x4_t s0 = vqmovn_s32(i0);
-        int16x4_t s1 = vqmovn_s32(i1);
-        int8x8_t result = vqmovn_s16(vcombine_s16(s0, s1));
-        vst1_s8(dst + k, result);
-    }
-
-    for (; k < K; k++) {
-        float val = (float)src[k] * inv_scale;
-        int32_t q = (int32_t)roundf(val);
-        q = std::max(-128, std::min(127, q));
-        dst[k] = (int8_t)q;
-    }
-
-    return scale;
-}
-
 void cactus_matmul_int8(
-    const __fp16* A,
+    const int8_t* A,
+    const float* A_scales,
     const int8_t* B,
     const __fp16* B_scales,
     __fp16* C,
@@ -257,24 +164,6 @@ void cactus_matmul_int8(
     #endif
 
     const size_t num_groups = K / group_size;
-    const size_t K_aligned = ((K + group_size - 1) / group_size) * group_size;
-
-    const size_t quant_size = M * K_aligned;
-    if (gemm_buffers.A_quant.size() < quant_size) {
-        gemm_buffers.A_quant.resize(quant_size);
-    }
-    if (gemm_buffers.row_data_size < M) {
-        gemm_buffers.row_data = std::make_unique<PaddedRowData[]>(M);
-        gemm_buffers.row_data_size = M;
-    }
-
-    for (size_t m = 0; m < M; m++) {
-        gemm_buffers.row_data[m].state.store(static_cast<uint8_t>(RowState::NOT_STARTED),
-            std::memory_order_relaxed);
-    }
-
-    int8_t* A_quant = gemm_buffers.A_quant.data();
-    auto* row_data = gemm_buffers.row_data.get();
 
     constexpr size_t MAX_GROUPS = 64;
     const size_t num_row_tiles = (M + TILE_M - 1) / TILE_M;
@@ -293,29 +182,6 @@ void cactus_matmul_int8(
             const size_t actual_m = m_end - m_start;
             const size_t actual_n = n_end - n_start;
 
-            for (size_t m = m_start; m < m_end; m++) {
-                uint8_t expected = static_cast<uint8_t>(RowState::NOT_STARTED);
-
-                if (row_data[m].state.compare_exchange_strong(expected,
-                        static_cast<uint8_t>(RowState::IN_PROGRESS),
-                        std::memory_order_acq_rel)) {
-
-                    row_data[m].scale = quantize_row_fp16_to_int8(
-                        A + m * K, A_quant + m * K_aligned, K);
-
-                    row_data[m].state.store(static_cast<uint8_t>(RowState::DONE),
-                        std::memory_order_release);
-
-                } else {
-                    while (row_data[m].state.load(std::memory_order_acquire) !=
-                           static_cast<uint8_t>(RowState::DONE)) {
-                        #if defined(__arm__) || defined(__aarch64__)
-                            __asm__ volatile("yield");
-                        #endif
-                    }
-                }
-            }
-
             int32_t all_group_acc[MAX_GROUPS][TILE_M][TILE_N] = {{{0}}};
 
             for (size_t ni = 0; ni < actual_n; ni++) {
@@ -333,8 +199,8 @@ void cactus_matmul_int8(
                         int32x4_t acc01 = vdupq_n_s32(0);  
                         int32x4_t acc23 = vdupq_n_s32(0); 
 
-                        const int8_t* a_base0 = A_quant + (m_start + mi) * K_aligned + k_base;
-                        const int8_t* a_base1 = A_quant + (m_start + mi + 1) * K_aligned + k_base;
+                        const int8_t* a_base0 = A + (m_start + mi) * K + k_base;
+                        const int8_t* a_base1 = A + (m_start + mi + 1) * K + k_base;
                         const int8_t* b_base0 = B + (n_start + ni) * K + k_base;
                         const int8_t* b_base1 = B + (n_start + ni + 1) * K + k_base;
                         const int8_t* b_base2 = B + (n_start + ni + 2) * K + k_base;
@@ -378,8 +244,8 @@ void cactus_matmul_int8(
                         int32x4_t acc0 = vdupq_n_s32(0);
 
                         for (size_t k_offset = 0; k_offset < group_size; k_offset += 64) {
-                            const int8_t* a_ptr0 = A_quant + (m_start + mi) * K_aligned + k_base + k_offset;
-                            const int8_t* a_ptr1 = A_quant + (m_start + mi + 1) * K_aligned + k_base + k_offset;
+                            const int8_t* a_ptr0 = A + (m_start + mi) * K + k_base + k_offset;
+                            const int8_t* a_ptr1 = A + (m_start + mi + 1) * K + k_base + k_offset;
                             const int8_t* b_ptr0 = B + (n_start + ni) * K + k_base + k_offset;
                             const int8_t* b_ptr1 = B + (n_start + ni + 1) * K + k_base + k_offset;
 
@@ -399,7 +265,7 @@ void cactus_matmul_int8(
                     for (; ni < actual_n; ni++) {
                         for (size_t mii = mi; mii < mi + 2; mii++) {
                             for (size_t k_offset = 0; k_offset < group_size; k_offset += 64) {
-                                const int8_t* a_ptr = A_quant + (m_start + mii) * K_aligned + k_base + k_offset;
+                                const int8_t* a_ptr = A + (m_start + mii) * K + k_base + k_offset;
                                 const int8_t* b_ptr = B + (n_start + ni) * K + k_base + k_offset;
                                 int32x4_t sum = vdupq_n_s32(0);
                                 sum = accum_dot(sum, vld1q_s8(a_ptr), vld1q_s8(b_ptr));
@@ -414,7 +280,7 @@ void cactus_matmul_int8(
 
                 for (; mi < actual_m; mi++) {
                     for (size_t k_offset = 0; k_offset < group_size; k_offset += 64) {
-                        const int8_t* a_ptr = A_quant + (m_start + mi) * K_aligned + k_base + k_offset;
+                        const int8_t* a_ptr = A + (m_start + mi) * K + k_base + k_offset;
                         int8x16_t a_vec0 = vld1q_s8(a_ptr);
                         int8x16_t a_vec1 = vld1q_s8(a_ptr + 16);
                         int8x16_t a_vec2 = vld1q_s8(a_ptr + 32);
@@ -447,7 +313,7 @@ void cactus_matmul_int8(
                     }
 
                     for (size_t mi = 0; mi < actual_m; mi++) {
-                        const int8_t* a_ptr = A_quant + (m_start + mi) * K_aligned + k_base + k_offset;
+                        const int8_t* a_ptr = A + (m_start + mi) * K + k_base + k_offset;
                         int8x16_t a_vec0 = vld1q_s8(a_ptr);
                         int8x16_t a_vec1 = vld1q_s8(a_ptr + 16);
                         int8x16_t a_vec2 = vld1q_s8(a_ptr + 32);
@@ -467,7 +333,7 @@ void cactus_matmul_int8(
 #endif
 
             for (size_t mi = 0; mi < actual_m; mi++) {
-                const float a_scale = row_data[m_start + mi].scale;
+                const float a_scale = A_scales[m_start + mi];
                 for (size_t ni = 0; ni < actual_n; ni++) {
                     const __fp16* col_scales = &B_scales[(n_start + ni) * num_groups];
                     float sum = 0.0f;
@@ -482,8 +348,9 @@ void cactus_matmul_int8(
 }
 
 void cactus_matmul_int4(
-    const __fp16* A,
-    const uint8_t* B_packed, 
+    const int8_t* A,
+    const float* A_scales,
+    const uint8_t* B_packed,
     const __fp16* B_scales,
     __fp16* C,
     size_t M, size_t K, size_t N,
@@ -500,25 +367,7 @@ void cactus_matmul_int4(
     #endif
 
     const size_t num_groups = K / group_size;
-    const size_t K_aligned = ((K + group_size - 1) / group_size) * group_size;
-    const size_t K_packed = K / 2;  
-
-    const size_t quant_size = M * K_aligned;
-    if (gemm_buffers.A_quant.size() < quant_size) {
-        gemm_buffers.A_quant.resize(quant_size);
-    }
-    if (gemm_buffers.row_data_size < M) {
-        gemm_buffers.row_data = std::make_unique<PaddedRowData[]>(M);
-        gemm_buffers.row_data_size = M;
-    }
-
-    for (size_t m = 0; m < M; m++) {
-        gemm_buffers.row_data[m].state.store(static_cast<uint8_t>(RowState::NOT_STARTED),
-            std::memory_order_relaxed);
-    }
-
-    int8_t* A_quant = gemm_buffers.A_quant.data();
-    auto* row_data = gemm_buffers.row_data.get();
+    const size_t K_packed = K / 2;
 
     constexpr size_t MAX_GROUPS = 64;
     const size_t num_row_tiles = (M + TILE_M - 1) / TILE_M;
@@ -537,29 +386,6 @@ void cactus_matmul_int4(
             const size_t actual_m = m_end - m_start;
             const size_t actual_n = n_end - n_start;
 
-            for (size_t m = m_start; m < m_end; m++) {
-                uint8_t expected = static_cast<uint8_t>(RowState::NOT_STARTED);
-
-                if (row_data[m].state.compare_exchange_strong(expected,
-                        static_cast<uint8_t>(RowState::IN_PROGRESS),
-                        std::memory_order_acq_rel)) {
-
-                    row_data[m].scale = quantize_row_fp16_to_int8(
-                        A + m * K, A_quant + m * K_aligned, K);
-
-                    row_data[m].state.store(static_cast<uint8_t>(RowState::DONE),
-                        std::memory_order_release);
-
-                } else {
-                    while (row_data[m].state.load(std::memory_order_acquire) !=
-                           static_cast<uint8_t>(RowState::DONE)) {
-                        #if defined(__arm__) || defined(__aarch64__)
-                            __asm__ volatile("yield");
-                        #endif
-                    }
-                }
-            }
-
             int32_t all_group_acc[MAX_GROUPS][TILE_M][TILE_N] = {{{0}}};
 
             for (size_t ni = 0; ni < actual_n; ni++) {
@@ -573,8 +399,8 @@ void cactus_matmul_int4(
 
                 size_t mi = 0;
                 for (; mi + 1 < actual_m; mi += 2) {
-                    const int8_t* a_base0 = A_quant + (m_start + mi) * K_aligned + k_base;
-                    const int8_t* a_base1 = A_quant + (m_start + mi + 1) * K_aligned + k_base;
+                    const int8_t* a_base0 = A + (m_start + mi) * K + k_base;
+                    const int8_t* a_base1 = A + (m_start + mi + 1) * K + k_base;
 
                     size_t ni = 0;
                     for (; ni + 3 < actual_n; ni += 4) {
@@ -687,7 +513,7 @@ void cactus_matmul_int4(
                             unpack_int4_to_int8x32(packed1, b2, b3);
 
                             for (size_t mii = mi; mii < mi + 2; mii++) {
-                                const int8_t* a_ptr = A_quant + (m_start + mii) * K_aligned + k_base + k_offset;
+                                const int8_t* a_ptr = A + (m_start + mii) * K + k_base + k_offset;
                                 int32x4_t sum = vdupq_n_s32(0);
                                 sum = accum_dot(sum, vld1q_s8(a_ptr), b0);
                                 sum = accum_dot(sum, vld1q_s8(a_ptr + 16), b1);
@@ -700,7 +526,7 @@ void cactus_matmul_int4(
                 }
 
                 for (; mi < actual_m; mi++) {
-                    const int8_t* a_base = A_quant + (m_start + mi) * K_aligned + k_base;
+                    const int8_t* a_base = A + (m_start + mi) * K + k_base;
                     for (size_t ni = 0; ni < actual_n; ni++) {
                         const uint8_t* b_ptr = B_packed + (n_start + ni) * K_packed + k_base_packed;
                         for (size_t k_offset = 0; k_offset < group_size; k_offset += 64) {
@@ -743,7 +569,7 @@ void cactus_matmul_int4(
                     }
 
                     for (size_t mi = 0; mi < actual_m; mi++) {
-                        const int8_t* a_ptr = A_quant + (m_start + mi) * K_aligned + k_base + k_offset;
+                        const int8_t* a_ptr = A + (m_start + mi) * K + k_base + k_offset;
                         int8x16_t a_vec0 = vld1q_s8(a_ptr);
                         int8x16_t a_vec1 = vld1q_s8(a_ptr + 16);
                         int8x16_t a_vec2 = vld1q_s8(a_ptr + 32);
@@ -763,7 +589,7 @@ void cactus_matmul_int4(
 #endif
 
             for (size_t mi = 0; mi < actual_m; mi++) {
-                const float a_scale = row_data[m_start + mi].scale;
+                const float a_scale = A_scales[m_start + mi];
                 for (size_t ni = 0; ni < actual_n; ni++) {
                     const __fp16* col_scales = &B_scales[(n_start + ni) * num_groups];
                     float sum = 0.0f;
