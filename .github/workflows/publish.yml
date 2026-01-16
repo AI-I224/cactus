@@ -1,0 +1,33 @@
+name: Publish Models
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/checkout@v4
+        with:
+          repository: cactus-compute/cactus-pro
+          token: ${{ secrets.CACTUS_PRO_TOKEN }}
+          path: cactus-pro
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - run: pip install -r tools/requirements.txt
+
+      - run: |
+          python -m tools.src.publish_to_hf \
+            --version ${GITHUB_REF#refs/tags/} \
+            --org Cactus-Compute \
+            --precision MIXED \
+            --bits 8
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
