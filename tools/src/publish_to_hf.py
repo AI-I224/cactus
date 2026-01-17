@@ -184,7 +184,6 @@ def main():
     for model_id in MODELS:
         name = get_model_name(model_id)
         repo_id = f"{args.org}/{name}"
-        print("Processing model")
 
         stage_dir = None
         try:
