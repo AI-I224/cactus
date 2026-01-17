@@ -128,8 +128,8 @@ def stage_model(model_id, weights_dir, precision, bits):
 
             fingerprint.update(sha256(model_pro_zip).encode())
             config["bits"] = bits
-        except Exception as e:
-            print(f"Failed to export pro weights for {model_id}: {e}")
+        except Exception:
+            print("Failed to export pro weights")
 
     shutil.rmtree(weights_out)
 
@@ -184,8 +184,9 @@ def main():
     for model_id in MODELS:
         name = get_model_name(model_id)
         repo_id = f"{args.org}/{name}"
-        print(f"{model_id} -> {repo_id}")
+        print("Processing model")
 
+        stage_dir = None
         try:
             weights_dir = export_model(model_id, token, args.precision)
             if not weights_dir:
@@ -219,14 +220,14 @@ def main():
                 repo_type="model",
                 tag_message=f"Release {args.version}",
             )
-            print(f"Tagged {args.version}")
+            print("Tagged release")
 
-        except Exception as e:
-            print(f"Error: {e}")
+        except Exception:
+            print("Model processing failed")
         finally:
             if stage_dir and stage_dir.exists():
                 shutil.rmtree(stage_dir)
-                print(f"Cleaned up {stage_dir}")
+                print("Cleaned up stage directory")
 
 
 if __name__ == "__main__":
