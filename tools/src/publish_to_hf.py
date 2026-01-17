@@ -219,6 +219,10 @@ def main():
 
         except Exception as e:
             print(f"Error: {e}")
+        finally:
+            if stage_dir and stage_dir.exists():
+                shutil.rmtree(stage_dir)
+                print(f"Cleaned up {stage_dir}")
 
 
 if __name__ == "__main__":

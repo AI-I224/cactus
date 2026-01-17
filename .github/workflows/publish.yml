@@ -7,7 +7,7 @@ on:
 
 jobs:
   publish:
-    runs-on: ubuntu-latest
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
 
@@ -24,7 +24,8 @@ jobs:
       - run: pip install -r tools/requirements.txt
 
       - run: |
-          python -m tools.src.publish_to_hf \
+          cd tools
+          python -m src.publish_to_hf \
             --version ${GITHUB_REF#refs/tags/} \
             --org Cactus-Compute \
             --precision MIXED \
