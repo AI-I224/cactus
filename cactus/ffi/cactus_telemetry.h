@@ -120,12 +120,8 @@ inline HttpClient::Response HttpClient::postJson(
         curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &response_code);
         response.status_code = static_cast<int>(response_code);
         response.success = (response_code >= 200 && response_code < 300);
-
-        if (!response.success && !response.body.empty()) {
-            std::cerr << "[Telemetry] Response body: " << response.body << std::endl;
-        }
     } else {
-        std::cerr << "[Telemetry] HTTP POST failed: " << curl_easy_strerror(res) << std::endl;
+        response.success = false;
     }
 
     if (header_list) {
