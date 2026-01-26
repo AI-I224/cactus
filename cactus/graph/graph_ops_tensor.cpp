@@ -249,11 +249,17 @@ void compute_embedding_node(GraphNode& node, const std::vector<std::unique_ptr<G
     __fp16* output = node.output_buffer.data_as<__fp16>();
 
     if (embeddings_buffer.precision == Precision::INT8 && embeddings_buffer.is_grouped_int8()) {
-        // Interleaved INT8 with group-wise quantization
         const int8_t* embeddings = embeddings_buffer.data_as<int8_t>();
         const __fp16* scales = embeddings_buffer.scales_as_fp16();
         size_t group_size = embeddings_buffer.group_size;
         size_t num_groups = embeddings_buffer.num_groups;
+
+        static const uint8_t gather_indices[4][16] = {
+            {0, 1, 2, 3, 16, 17, 18, 19, 32, 33, 34, 35, 48, 49, 50, 51},  // lane 0
+            {4, 5, 6, 7, 20, 21, 22, 23, 36, 37, 38, 39, 52, 53, 54, 55},  // lane 1
+            {8, 9, 10, 11, 24, 25, 26, 27, 40, 41, 42, 43, 56, 57, 58, 59}, // lane 2
+            {12, 13, 14, 15, 28, 29, 30, 31, 44, 45, 46, 47, 60, 61, 62, 63} // lane 3
+        };
 
         for (size_t i = 0; i < num_indices; i++) {
             size_t idx = static_cast<size_t>(indices_ptr[i]);
@@ -265,24 +271,23 @@ void compute_embedding_node(GraphNode& node, const std::vector<std::unique_ptr<G
             size_t lane = idx % 4;
             __fp16* out_row = output + i * hidden_dim;
 
+            uint8x16_t indices_vec = vld1q_u8(gather_indices[lane]);
+
             for (size_t g = 0; g < num_groups; g++) {
                 float scale = (float)scales[(block * num_groups + g) * 4 + lane];
                 float32x4_t scale_vec = vdupq_n_f32(scale);
 
                 size_t k_start = g * group_size;
                 size_t k_end = std::min(k_start + group_size, hidden_dim);
-                const int8_t* block_base = embeddings + (block * hidden_dim + k_start) * 4;
+
+                const int8_t* group_base = embeddings + (block * hidden_dim + k_start) * 4;
 
                 size_t k = k_start;
                 for (; k + 16 <= k_end; k += 16) {
-                    int8x16x4_t loaded = vld4q_s8(block_base + (k - k_start) * 4);
-                    int8x16_t values;
-                    switch (lane) {
-                        case 0: values = loaded.val[0]; break;
-                        case 1: values = loaded.val[1]; break;
-                        case 2: values = loaded.val[2]; break;
-                        default: values = loaded.val[3]; break;
-                    }
+                    const int8_t* chunk_base = group_base + (k - k_start) * 4;
+                    int8x16x4_t table = vld1q_s8_x4(chunk_base);
+
+                    int8x16_t values = vqtbl4q_s8(table, indices_vec);
 
                     int16x8_t lo16 = vmovl_s8(vget_low_s8(values));
                     int16x8_t hi16 = vmovl_s8(vget_high_s8(values));
@@ -297,13 +302,14 @@ void compute_embedding_node(GraphNode& node, const std::vector<std::unique_ptr<G
                 }
 
                 for (; k < k_end; k++) {
-                    int8_t val = embeddings[(block * hidden_dim + k) * 4 + lane];
+                    size_t k_group = k / 4;
+                    size_t k_within = k % 4;
+                    int8_t val = embeddings[(block * (hidden_dim / 4) + k_group) * 16 + lane * 4 + k_within];
                     out_row[k] = static_cast<__fp16>(val * scale);
                 }
             }
         }
     } else if (embeddings_buffer.precision == Precision::FP16) {
-        // FP16 embeddings
         const __fp16* embeddings = embeddings_buffer.data_as<__fp16>();
         for (size_t i = 0; i < num_indices; i++) {
             size_t idx = static_cast<size_t>(indices_ptr[i]);

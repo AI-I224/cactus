@@ -9,7 +9,7 @@ except ImportError:
     torch = None
 
 
-GROUP_SIZE = 128
+GROUP_SIZE = 32
 INTERLEAVE_BLOCK = 4
 
 CACTUS_MAGIC = b'CACT'
@@ -37,17 +37,20 @@ def compute_padding(current_offset: int, alignment: int) -> bytes:
 
 
 def interleave_weights(data: np.ndarray, block_size: int = INTERLEAVE_BLOCK) -> tuple[np.ndarray, int]:
-    """Interleave rows for SIMD-friendly GEMM access.
+    """Interleave rows for SIMD-friendly GEMM access using vdotq_laneq_s32.
 
     Input:  data[N, K] - row-major weights
-    Output: data_interleaved[N_padded/block_size, K, block_size] flattened
+    Output: data_interleaved[N_padded/block_size, K/4, block_size, 4] flattened
             original_N - the original N before padding
 
-    Memory layout after interleaving:
-    For each block of 4 rows and each k position:
-        [row0_k, row1_k, row2_k, row3_k, row0_k+1, row1_k+1, ...]
+    Memory layout after interleaving (GGML-style):
+    For each block of 4 rows and each group of 4 K positions:
+        [row0_k0..k3, row1_k0..k3, row2_k0..k3, row3_k0..k3, row0_k4..k7, ...]
 
-    This enables vld4q_s8 to load 4 columns worth of data efficiently.
+    This enables vdotq_laneq_s32 to broadcast activation lanes efficiently:
+    - Load 16 bytes of activation: a[k:k+16] (4 groups of 4)
+    - Load 16 bytes of weights: 4 columns x 4 K values
+    - Use lane broadcast to compute 4 output columns simultaneously
     """
     N, K = data.shape
     original_N = N
@@ -57,8 +60,13 @@ def interleave_weights(data: np.ndarray, block_size: int = INTERLEAVE_BLOCK) -> 
         data = np.pad(data, ((0, pad_n), (0, 0)), mode='constant', constant_values=0)
         N = data.shape[0]
 
-    data = data.reshape(N // block_size, block_size, K)
-    data = data.transpose(0, 2, 1)
+    if K % 4 != 0:
+        pad_k = 4 - (K % 4)
+        data = np.pad(data, ((0, 0), (0, pad_k)), mode='constant', constant_values=0)
+        K = data.shape[1]
+
+    data = data.reshape(N // block_size, block_size, K // 4, 4)
+    data = data.transpose(0, 2, 1, 3)
     return data.reshape(-1), original_N
 
 
@@ -88,7 +96,7 @@ def save_tensor_with_header(tensor, output_path, precision='INT8', transpose=Fal
     For 2D tensors with INT8/INT4 precision:
     - INT4 is unpacked to INT8 at save time (no runtime unpacking needed)
     - Weights are interleaved in blocks of 4 rows for SIMD efficiency
-    - Layout: [N/4, K, 4] enables vld4q_s8 for efficient column loading
+    - Layout: [N/4, K/4, 4, 4] enables vdotq_laneq_s32 for efficient GEMV/GEMM
 
     Args:
         tensor: The tensor to save (PyTorch or NumPy)
@@ -444,4 +452,4 @@ def print_quantization_summary(quantization_stats, args=None):
         print(f"SNR - Mean: {np.mean(snr_values):.1f}dB, Max: {np.max(snr_values):.1f}dB, Median: {np.median(snr_values):.1f}dB, Min: {np.min(snr_values):.1f}dB")
         print(f"CosSim - Mean: {np.mean(cos_sim_values):.6f}, Max: {np.max(cos_sim_values):.6f}, Median: {np.median(cos_sim_values):.6f}, Min: {np.min(cos_sim_values):.6f}")
         print(f"Processed {int8_count} INT8 tensors, {int4_count} INT4 tensors (stored as INT8), {fp16_count} FP16 tensors")
-        print(f"Note: All quantized weights use interleaved format (block size {INTERLEAVE_BLOCK}) for SIMD efficiency")
+        print(f"Note: All quantized weights use GGML-style interleaved format [N/4, K/4, 4, 4] for vdotq_laneq_s32")

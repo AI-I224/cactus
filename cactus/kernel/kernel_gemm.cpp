@@ -158,45 +158,56 @@ void cactus_gemv_int8(
 
                 __builtin_prefetch(b_base0 + group_size * 8, 0, 3);
 
-                int32x4_t acc0[4] = {vdupq_n_s32(0), vdupq_n_s32(0), vdupq_n_s32(0), vdupq_n_s32(0)};
-                int32x4_t acc1[4] = {vdupq_n_s32(0), vdupq_n_s32(0), vdupq_n_s32(0), vdupq_n_s32(0)};
+                int32x4_t acc0 = vdupq_n_s32(0);
+                int32x4_t acc1 = vdupq_n_s32(0);
 
                 {
-                    int8x16_t a_vec0 = vld1q_s8(a_ptr0);
-                    int8x16_t a_vec1 = vld1q_s8(a_ptr0 + 16);
-                    int8x16x4_t b_cols0 = vld4q_s8(b_base0);
-                    int8x16x4_t b_cols1 = vld4q_s8(b_base0 + 64);
+                    int8x16_t a_vec = vld1q_s8(a_ptr0);
+                    int8x16_t b0 = vld1q_s8(b_base0);
+                    int8x16_t b1 = vld1q_s8(b_base0 + 16);
+                    int8x16_t b2 = vld1q_s8(b_base0 + 32);
+                    int8x16_t b3 = vld1q_s8(b_base0 + 48);
 
-                    acc0[0] = accum_dot(acc0[0], a_vec0, b_cols0.val[0]);
-                    acc0[1] = accum_dot(acc0[1], a_vec0, b_cols0.val[1]);
-                    acc0[2] = accum_dot(acc0[2], a_vec0, b_cols0.val[2]);
-                    acc0[3] = accum_dot(acc0[3], a_vec0, b_cols0.val[3]);
+                    acc0 = vdotq_laneq_s32(acc0, b0, a_vec, 0);
+                    acc0 = vdotq_laneq_s32(acc0, b1, a_vec, 1);
+                    acc0 = vdotq_laneq_s32(acc0, b2, a_vec, 2);
+                    acc0 = vdotq_laneq_s32(acc0, b3, a_vec, 3);
 
-                    acc0[0] = accum_dot(acc0[0], a_vec1, b_cols1.val[0]);
-                    acc0[1] = accum_dot(acc0[1], a_vec1, b_cols1.val[1]);
-                    acc0[2] = accum_dot(acc0[2], a_vec1, b_cols1.val[2]);
-                    acc0[3] = accum_dot(acc0[3], a_vec1, b_cols1.val[3]);
+                    a_vec = vld1q_s8(a_ptr0 + 16);
+                    b0 = vld1q_s8(b_base0 + 64);
+                    b1 = vld1q_s8(b_base0 + 80);
+                    b2 = vld1q_s8(b_base0 + 96);
+                    b3 = vld1q_s8(b_base0 + 112);
+
+                    acc0 = vdotq_laneq_s32(acc0, b0, a_vec, 0);
+                    acc0 = vdotq_laneq_s32(acc0, b1, a_vec, 1);
+                    acc0 = vdotq_laneq_s32(acc0, b2, a_vec, 2);
+                    acc0 = vdotq_laneq_s32(acc0, b3, a_vec, 3);
                 }
 
                 {
-                    int8x16_t a_vec0 = vld1q_s8(a_ptr1);
-                    int8x16_t a_vec1 = vld1q_s8(a_ptr1 + 16);
-                    int8x16x4_t b_cols0 = vld4q_s8(b_base1);
-                    int8x16x4_t b_cols1 = vld4q_s8(b_base1 + 64);
+                    int8x16_t a_vec = vld1q_s8(a_ptr1);
+                    int8x16_t b0 = vld1q_s8(b_base1);
+                    int8x16_t b1 = vld1q_s8(b_base1 + 16);
+                    int8x16_t b2 = vld1q_s8(b_base1 + 32);
+                    int8x16_t b3 = vld1q_s8(b_base1 + 48);
 
-                    acc1[0] = accum_dot(acc1[0], a_vec0, b_cols0.val[0]);
-                    acc1[1] = accum_dot(acc1[1], a_vec0, b_cols0.val[1]);
-                    acc1[2] = accum_dot(acc1[2], a_vec0, b_cols0.val[2]);
-                    acc1[3] = accum_dot(acc1[3], a_vec0, b_cols0.val[3]);
+                    acc1 = vdotq_laneq_s32(acc1, b0, a_vec, 0);
+                    acc1 = vdotq_laneq_s32(acc1, b1, a_vec, 1);
+                    acc1 = vdotq_laneq_s32(acc1, b2, a_vec, 2);
+                    acc1 = vdotq_laneq_s32(acc1, b3, a_vec, 3);
 
-                    acc1[0] = accum_dot(acc1[0], a_vec1, b_cols1.val[0]);
-                    acc1[1] = accum_dot(acc1[1], a_vec1, b_cols1.val[1]);
-                    acc1[2] = accum_dot(acc1[2], a_vec1, b_cols1.val[2]);
-                    acc1[3] = accum_dot(acc1[3], a_vec1, b_cols1.val[3]);
+                    a_vec = vld1q_s8(a_ptr1 + 16);
+                    b0 = vld1q_s8(b_base1 + 64);
+                    b1 = vld1q_s8(b_base1 + 80);
+                    b2 = vld1q_s8(b_base1 + 96);
+                    b3 = vld1q_s8(b_base1 + 112);
+
+                    acc1 = vdotq_laneq_s32(acc1, b0, a_vec, 0);
+                    acc1 = vdotq_laneq_s32(acc1, b1, a_vec, 1);
+                    acc1 = vdotq_laneq_s32(acc1, b2, a_vec, 2);
+                    acc1 = vdotq_laneq_s32(acc1, b3, a_vec, 3);
                 }
-
-                int32x4_t sums0 = {vaddvq_s32(acc0[0]), vaddvq_s32(acc0[1]), vaddvq_s32(acc0[2]), vaddvq_s32(acc0[3])};
-                int32x4_t sums1 = {vaddvq_s32(acc1[0]), vaddvq_s32(acc1[1]), vaddvq_s32(acc1[2]), vaddvq_s32(acc1[3])};
 
                 const __fp16* scale_ptr0 = B_scales + (n_block * num_groups + g) * 4;
                 const __fp16* scale_ptr1 = B_scales + (n_block * num_groups + g + 1) * 4;
@@ -206,39 +217,44 @@ void cactus_gemv_int8(
                 float32x4_t scales0 = vcvt_f32_f16(scales0_f16);
                 float32x4_t scales1 = vcvt_f32_f16(scales1_f16);
 
-                running_sum = vmlaq_f32(running_sum, vcvtq_f32_s32(sums0), scales0);
-                running_sum = vmlaq_f32(running_sum, vcvtq_f32_s32(sums1), scales1);
+                running_sum = vmlaq_f32(running_sum, vcvtq_f32_s32(acc0), scales0);
+                running_sum = vmlaq_f32(running_sum, vcvtq_f32_s32(acc1), scales1);
             }
 
             for (; g < num_groups; g++) {
                 const size_t k_base = g * group_size;
                 const int8_t* a_ptr = A + k_base;
-                const int8_t* b_block_base = B + (n_block * K + k_base) * 4;
+                const int8_t* b_base = B + (n_block * K + k_base) * 4;
 
-                int32x4_t acc[4] = {vdupq_n_s32(0), vdupq_n_s32(0), vdupq_n_s32(0), vdupq_n_s32(0)};
+                int32x4_t acc = vdupq_n_s32(0);
 
-                int8x16_t a_vec0 = vld1q_s8(a_ptr);
-                int8x16_t a_vec1 = vld1q_s8(a_ptr + 16);
-                int8x16x4_t b_cols0 = vld4q_s8(b_block_base);
-                int8x16x4_t b_cols1 = vld4q_s8(b_block_base + 64);
+                int8x16_t a_vec = vld1q_s8(a_ptr);
+                int8x16_t b0 = vld1q_s8(b_base);
+                int8x16_t b1 = vld1q_s8(b_base + 16);
+                int8x16_t b2 = vld1q_s8(b_base + 32);
+                int8x16_t b3 = vld1q_s8(b_base + 48);
 
-                acc[0] = accum_dot(acc[0], a_vec0, b_cols0.val[0]);
-                acc[1] = accum_dot(acc[1], a_vec0, b_cols0.val[1]);
-                acc[2] = accum_dot(acc[2], a_vec0, b_cols0.val[2]);
-                acc[3] = accum_dot(acc[3], a_vec0, b_cols0.val[3]);
+                acc = vdotq_laneq_s32(acc, b0, a_vec, 0);
+                acc = vdotq_laneq_s32(acc, b1, a_vec, 1);
+                acc = vdotq_laneq_s32(acc, b2, a_vec, 2);
+                acc = vdotq_laneq_s32(acc, b3, a_vec, 3);
 
-                acc[0] = accum_dot(acc[0], a_vec1, b_cols1.val[0]);
-                acc[1] = accum_dot(acc[1], a_vec1, b_cols1.val[1]);
-                acc[2] = accum_dot(acc[2], a_vec1, b_cols1.val[2]);
-                acc[3] = accum_dot(acc[3], a_vec1, b_cols1.val[3]);
+                a_vec = vld1q_s8(a_ptr + 16);
+                b0 = vld1q_s8(b_base + 64);
+                b1 = vld1q_s8(b_base + 80);
+                b2 = vld1q_s8(b_base + 96);
+                b3 = vld1q_s8(b_base + 112);
 
-                int32x4_t sums = {vaddvq_s32(acc[0]), vaddvq_s32(acc[1]), vaddvq_s32(acc[2]), vaddvq_s32(acc[3])};
+                acc = vdotq_laneq_s32(acc, b0, a_vec, 0);
+                acc = vdotq_laneq_s32(acc, b1, a_vec, 1);
+                acc = vdotq_laneq_s32(acc, b2, a_vec, 2);
+                acc = vdotq_laneq_s32(acc, b3, a_vec, 3);
 
                 const __fp16* scale_ptr = B_scales + (n_block * num_groups + g) * 4;
                 float16x4_t scales_f16 = vld1_f16(scale_ptr);
                 float32x4_t scales = vcvt_f32_f16(scales_f16);
 
-                running_sum = vmlaq_f32(running_sum, vcvtq_f32_s32(sums), scales);
+                running_sum = vmlaq_f32(running_sum, vcvtq_f32_s32(acc), scales);
             }
 
             float32x4_t result = vmulq_n_f32(running_sum, A_scale);
@@ -286,6 +302,7 @@ void cactus_gemm_int8(
     const size_t num_row_tiles = (M + TILE_M - 1) / TILE_M;
     const size_t total_tiles = num_row_tiles * N_blocks;
 
+
     CactusThreading::parallel_gemm_tiles(M, total_tiles,
         [=](size_t tile_start, size_t tile_end) {
             for (size_t tile_idx = tile_start; tile_idx < tile_end; ++tile_idx) {
@@ -305,37 +322,42 @@ void cactus_gemm_int8(
 
                 for (size_t g = 0; g < num_groups; g++) {
                     const size_t k_base = g * group_size;
-                    const int8_t* b_block_base = B + (n_block * K + k_base) * 4;
+                    const int8_t* b_base = B + (n_block * K + k_base) * 4;
 
-                    __builtin_prefetch(b_block_base + group_size * 4, 0, 3);
+                    __builtin_prefetch(b_base + group_size * 4, 0, 3);
 
-                    int8x16x4_t b_cols0 = vld4q_s8(b_block_base);
-                    int8x16x4_t b_cols1 = vld4q_s8(b_block_base + 64);
+                    int8x16_t b00 = vld1q_s8(b_base);
+                    int8x16_t b01 = vld1q_s8(b_base + 16);
+                    int8x16_t b02 = vld1q_s8(b_base + 32);
+                    int8x16_t b03 = vld1q_s8(b_base + 48);
+                
+                    int8x16_t b10 = vld1q_s8(b_base + 64);
+                    int8x16_t b11 = vld1q_s8(b_base + 80);
+                    int8x16_t b12 = vld1q_s8(b_base + 96);
+                    int8x16_t b13 = vld1q_s8(b_base + 112);
+
+                    const __fp16* scale_ptr = B_scales + (n_block * num_groups + g) * 4;
+                    float16x4_t scales_f16 = vld1_f16(scale_ptr);
+                    float32x4_t scales = vcvt_f32_f16(scales_f16);
+
                     for (size_t mi = 0; mi < actual_m; mi++) {
                         const int8_t* a_ptr = A + (m_start + mi) * K + k_base;
 
-                        int8x16_t a_vec0 = vld1q_s8(a_ptr);
-                        int8x16_t a_vec1 = vld1q_s8(a_ptr + 16);
+                        int32x4_t acc = vdupq_n_s32(0);
 
-                        int32x4_t acc[4] = {vdupq_n_s32(0), vdupq_n_s32(0), vdupq_n_s32(0), vdupq_n_s32(0)};
+                        int8x16_t a_vec = vld1q_s8(a_ptr);
+                        acc = vdotq_laneq_s32(acc, b00, a_vec, 0);
+                        acc = vdotq_laneq_s32(acc, b01, a_vec, 1);
+                        acc = vdotq_laneq_s32(acc, b02, a_vec, 2);
+                        acc = vdotq_laneq_s32(acc, b03, a_vec, 3);
 
-                        acc[0] = accum_dot(acc[0], a_vec0, b_cols0.val[0]);
-                        acc[1] = accum_dot(acc[1], a_vec0, b_cols0.val[1]);
-                        acc[2] = accum_dot(acc[2], a_vec0, b_cols0.val[2]);
-                        acc[3] = accum_dot(acc[3], a_vec0, b_cols0.val[3]);
+                        a_vec = vld1q_s8(a_ptr + 16);
+                        acc = vdotq_laneq_s32(acc, b10, a_vec, 0);
+                        acc = vdotq_laneq_s32(acc, b11, a_vec, 1);
+                        acc = vdotq_laneq_s32(acc, b12, a_vec, 2);
+                        acc = vdotq_laneq_s32(acc, b13, a_vec, 3);
 
-                        acc[0] = accum_dot(acc[0], a_vec1, b_cols1.val[0]);
-                        acc[1] = accum_dot(acc[1], a_vec1, b_cols1.val[1]);
-                        acc[2] = accum_dot(acc[2], a_vec1, b_cols1.val[2]);
-                        acc[3] = accum_dot(acc[3], a_vec1, b_cols1.val[3]);
-
-                        int32x4_t sums = {vaddvq_s32(acc[0]), vaddvq_s32(acc[1]), vaddvq_s32(acc[2]), vaddvq_s32(acc[3])};
-
-                        const __fp16* scale_ptr = B_scales + (n_block * num_groups + g) * 4;
-                        float16x4_t scales_f16 = vld1_f16(scale_ptr);
-                        float32x4_t scales = vcvt_f32_f16(scales_f16);
-
-                        running_sum[mi] = vmlaq_f32(running_sum[mi], vcvtq_f32_s32(sums), scales);
+                        running_sum[mi] = vmlaq_f32(running_sum[mi], vcvtq_f32_s32(acc), scales);
                     }
                 }
 
