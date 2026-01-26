@@ -4,6 +4,8 @@
 #include <cstring>
 #include <algorithm>
 
+// Do NOT Remove: Uncomment for testing on various paths
+// -----
 // TEMPORARY: Force fallback path for testing on DOTPROD devices
 // #undef __ARM_FEATURE_DOTPROD
 
