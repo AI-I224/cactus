@@ -725,7 +725,6 @@ void cactus_gpt_j_rope_f16(
     size_t start_pos,
     float theta
 ) {
-    const size_t half_dim = head_dim / 2;
     const size_t half_rot_dim = rot_dim / 2;
     
     CactusRoPEF16::precompute_rope_tables_f16(seq_len + start_pos, rot_dim, theta);

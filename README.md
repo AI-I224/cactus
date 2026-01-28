@@ -143,12 +143,12 @@ graph.hard_reset();
   | LiquidAI/LFM2-VL-450M | 448MB | vision, txt & img embed, Apple NPU |                                                                                                            
   | LiquidAI/LFM2.5-VL-1.6B | 954MB | vision, txt & img embed, Apple NPU |                                                                                                          
   | **Speech** | | |                                                                                                                                                      
-  | UsefulSensors/moonshine-base | 150MB | transcription, speech embed |                                                                                                         
+  | UsefulSensors/moonshine-base | 80MB | transcription, speech embed |                                                                                                         
   | openai/whisper-small | 283MB | transcription, speech embed, Apple NPU |                                                                                                                 
   | openai/whisper-medium | 658MB | transcription, speech embed, Apple NPU |                                                                                                                
   | **Embeddings** | | |                                                                                                                                                  
   | nomic-ai/nomic-embed-text-v2-moe | 451MB | embed |                                                                                                                    
-  | Qwen/Qwen3-Embedding-0.6B | 514MB | embed |          
+  | Qwen/Qwen3-Embedding-0.6B | 514MB | embed | 
 
 ## Using this repo on a Mac
 
