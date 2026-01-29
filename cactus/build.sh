@@ -2,6 +2,33 @@
 
 set -e
 
+# Check for required build tools
+missing=()
+if ! command -v cmake &> /dev/null; then
+    missing+=("cmake")
+fi
+
+if ! command -v make &> /dev/null; then
+    missing+=("make")
+fi
+
+if ! command -v g++ &> /dev/null && ! command -v clang++ &> /dev/null; then
+    missing+=("g++")
+fi
+
+if [ ${#missing[@]} -gt 0 ]; then
+    echo "Error: Missing required build tools: ${missing[*]}"
+    echo ""
+    if [[ "$OSTYPE" == "linux-gnu"* ]]; then
+        echo "Install with: sudo apt-get install cmake build-essential"
+    elif [[ "$OSTYPE" == "darwin"* ]]; then
+        echo "Install with: xcode-select --install && brew install cmake"
+    else
+        echo "Please install cmake and a C++ compiler for your platform."
+    fi
+    exit 1
+fi
+
 echo "Building Cactus library..."
 
 cd "$(dirname "$0")/../cactus"

@@ -150,11 +150,24 @@ graph.hard_reset();
   | nomic-ai/nomic-embed-text-v2-moe | 451MB | embed |                                                                                                                    
   | Qwen/Qwen3-Embedding-0.6B | 514MB | embed |          
 
-## Using this repo on a Mac
-
+## Using this repo on Mac
 ```bash
+# simply clone the repo and run the setup
 git clone https://github.com/cactus-compute/cactus && cd cactus && source ./setup
 ```
+
+## Using this repo on Linux (Ubuntu/Debian)
+
+```bash
+# install the required dependencies
+sudo apt-get update
+sudo apt-get install python3 python3-venv python3-pip cmake build-essential libcurl4-openssl-dev
+```
+```bash
+# clone the repo and run the setup
+git clone https://github.com/cactus-compute/cactus && cd cactus && source ./setup
+```
+
 
 | Command | Description |
 |---------|-------------|

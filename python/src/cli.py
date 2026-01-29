@@ -204,6 +204,27 @@ def cmd_download(args):
         return 1
 
 
+def check_libcurl():
+    """Check if libcurl development libraries are installed."""
+    if check_command('pkg-config'):
+        result = subprocess.run(['pkg-config', '--exists', 'libcurl'], capture_output=True)
+        if result.returncode == 0:
+            return True
+
+    curl_paths = [
+        '/usr/include/curl/curl.h',
+        '/usr/include/x86_64-linux-gnu/curl/curl.h',
+        '/usr/include/aarch64-linux-gnu/curl/curl.h',
+        '/usr/local/include/curl/curl.h',
+        '/opt/homebrew/include/curl/curl.h',
+    ]
+    for path in curl_paths:
+        if Path(path).exists():
+            return True
+
+    return False
+
+
 def cmd_build(args):
     """Build the Cactus library and chat binary."""
     if getattr(args, 'apple', False):
@@ -221,7 +242,13 @@ def cmd_build(args):
     if not check_command('cmake'):
         print_color(RED, "Error: CMake is not installed")
         print("  macOS: brew install cmake")
-        print("  Ubuntu: sudo apt-get install cmake")
+        print("  Ubuntu: sudo apt-get install cmake build-essential")
+        return 1
+
+    if not check_libcurl():
+        print_color(RED, "Error: libcurl development libraries not found")
+        print("  macOS: brew install curl")
+        print("  Ubuntu: sudo apt-get install libcurl4-openssl-dev")
         return 1
 
     cactus_dir = PROJECT_ROOT / "cactus"
