@@ -195,6 +195,10 @@ int cactus_transcribe(
         std::vector<uint32_t> generated_tokens;
         std::string final_text;
 
+        float first_token_entropy = 0.0f;
+        float total_entropy_sum = 0.0f;
+        size_t total_entropy_count = 0;
+
         float max_tps = handle->model->get_config().default_max_tps;
         if (max_tps < 0) {
             max_tps = 100;
@@ -208,11 +212,14 @@ int cactus_transcribe(
             max_tokens = max_tps_tokens;
         }
 
-        uint32_t next_token = handle->model->decode_with_audio(tokens, audio_features, temperature, top_p, top_k);
+        uint32_t next_token = handle->model->decode_with_audio(tokens, audio_features, temperature, top_p, top_k, "", &first_token_entropy);
         {
             auto t_first = std::chrono::high_resolution_clock::now();
             time_to_first_token = std::chrono::duration_cast<std::chrono::microseconds>(t_first - start_time).count() / 1000.0;
         }
+
+        total_entropy_sum += first_token_entropy;
+        total_entropy_count++;
 
         generated_tokens.push_back(next_token);
         tokens.push_back(next_token);
@@ -226,7 +233,12 @@ int cactus_transcribe(
             for (size_t i = 1; i < max_tokens; ++i) {
                 if (handle->should_stop) break;
 
-                next_token = handle->model->decode_with_audio(tokens, audio_features, temperature, top_p, top_k);
+                float token_entropy = 0.0f;
+                next_token = handle->model->decode_with_audio(tokens, audio_features, temperature, top_p, top_k, "", &token_entropy);
+
+                total_entropy_sum += token_entropy;
+                total_entropy_count++;
+
                 generated_tokens.push_back(next_token);
                 tokens.push_back(next_token);
                 completion_tokens++;
@@ -238,6 +250,9 @@ int cactus_transcribe(
                 if (matches_stop_sequence(generated_tokens, stop_token_sequences)) break;
             }
         }
+
+        float mean_entropy = total_entropy_count > 0 ? total_entropy_sum / static_cast<float>(total_entropy_count) : 0.0f;
+        float confidence = 1.0f - mean_entropy;
 
         auto end_time = std::chrono::high_resolution_clock::now();
         double total_time_ms = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time).count() / 1000.0;
@@ -267,7 +282,7 @@ int cactus_transcribe(
             cleaned_text.erase(0, 1);
         }
 
-        std::string json = construct_response_json(cleaned_text, {}, time_to_first_token, total_time_ms, prefill_tps, decode_tps, prompt_tokens, completion_tokens);
+        std::string json = construct_response_json(cleaned_text, {}, time_to_first_token, total_time_ms, prefill_tps, decode_tps, prompt_tokens, completion_tokens, confidence);
 
         if (json.size() >= buffer_size) {
             handle_error_response("Response buffer too small", response_buffer, buffer_size);
