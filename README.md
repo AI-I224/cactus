@@ -135,10 +135,9 @@ graph.hard_reset();
   | LiquidAI/LFM2-700M | 498MB | completion, tools, embed |                                                                                                               
   | google/gemma-3-1b-it | 642MB | completion |                                                                                                                           
   | LiquidAI/LFM2.5-1.2B-Thinking | 474MB | completion, tools, embed |                                                                                                    
-  | LiquidAI/LFM2.5-1.2B-Instruct | 474MB | completion, tools, embed |                                                                                                    
-  | LiquidAI/LFM2-1.2B-RAG | 474MB | completion, tools, embed |                                                                                                           
-  | LiquidAI/LFM2-1.2B-Tool | 474MB | completion, tools, embed |                                                                                                          
-  | Qwen/Qwen3-1.7B | 749MB | completion, tools, embed |                                                                                                                  
+  | LiquidAI/LFM2.5-1.2B-Instruct | 474MB | completion, tools, embed |                                                                                                      
+  | Qwen/Qwen3-1.7B | 749MB | completion, tools, embed | 
+  | LiquidAI/LFM2-2.6B | 1.42G | completion, tools, embed |                                                                                                              
   | **VLMs** | | |                                                                                                                                                        
   | LiquidAI/LFM2-VL-450M | 448MB | vision, txt & img embed, Apple NPU |                                                                                                            
   | LiquidAI/LFM2.5-VL-1.6B | 954MB | vision, txt & img embed, Apple NPU |                                                                                                          
@@ -188,7 +187,8 @@ git clone https://github.com/cactus-compute/cactus && cd cactus && source ./setu
 5. [UC Irvine's AI@UCI](https://aiclub.ics.uci.edu/)
 6. [Imperial College's AI Society](https://www.imperialcollegeunion.org/csp/1391)
 7. [University of Pennsylvania's AI@Penn](https://ai-at-penn-main-105.vercel.app/)
-8. [Universit of Colorado Boulder's AI Club](https://www.cuaiclub.org/)
+8. [University of Michigan Ann-Arbor MSAIL](https://msail.github.io/)
+9. [University of Colorado Boulder's AI Club](https://www.cuaiclub.org/)
 
 ## Join The Community
 - [Reddit Channel](https://www.reddit.com/r/cactuscompute/)
