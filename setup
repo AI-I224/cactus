@@ -26,8 +26,8 @@ echo -e "${BLUE}Step 1: Configuring git hooks for DCO...${NC}"
 git config core.hooksPath .githooks
 echo -e "${GREEN}✓ Git hooks configured${NC}"
 
-name=$(git config user.name)
-email=$(git config user.email)
+name=$(git config user.name || true)
+email=$(git config user.email || true)
 
 if [ -z "$name" ] || [ -z "$email" ]; then
     echo ""
@@ -44,12 +44,12 @@ fi
 echo ""
 echo -e "${BLUE}Step 2: Setting up Python virtual environment...${NC}"
 
-if ! command -v python3 &> /dev/null; then
-    echo -e "${RED}Error: Python3 is not installed${NC}"
+if ! command -v python3 &> /dev/null || ! command -v pip &> /dev/null; then
+    echo -e "${RED}Error: python3 or pip is not installed${NC}"
     echo ""
-    echo "Please install Python3:"
+    echo "Please install python3 and pip:"
     echo "  macOS:        brew install python3"
-    echo "  Ubuntu/Debian: sudo apt-get install python3 python3-venv"
+    echo "  Ubuntu/Debian: sudo apt-get install python3 python3-venv python3-pip"
     exit 1
 fi
 

@@ -114,6 +114,22 @@ Example response from Gemma3-270m-INT8
 
 - Clone repo and run `source ./setup`.
 - Setup is automatic and usage instructions printed after.
+
+## Using this repo on Linux (Ubuntu/Debian)
+
+First, install the required dependencies:
+```bash
+sudo apt-get update
+sudo apt-get install python3 python3-venv python3-pip cmake build-essential libcurl4-openssl-dev
+```
+
+Then clone the repo and run setup:
+```bash
+git clone https://github.com/cactus-compute/cactus.git
+cd cactus
+source ./setup
+```
+
 - Run `cactus --help` to see guides anytime.
 - Remember to run `source ./setup` in any new terminal.
 

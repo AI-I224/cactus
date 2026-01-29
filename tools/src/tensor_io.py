@@ -12,7 +12,10 @@ except ImportError:
 def save_tensor_with_header(tensor, output_path, precision='FP32', transpose=False, stats_tracker=None, args=None, model_type=None):
     """Save a tensor to binary format with header metadata and optional quantization."""
     if torch is not None and isinstance(tensor, torch.Tensor):
-        data = tensor.detach().cpu().numpy()
+        tensor = tensor.detach().cpu()
+        if tensor.dtype == torch.bfloat16:
+            tensor = tensor.float()
+        data = tensor.numpy()
     else:
         data = np.array(tensor)
 
