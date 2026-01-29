@@ -571,7 +571,7 @@ def cmd_test(args):
             return download_result
 
         # Regenerate transcribe model weights with same precision
-        transcribe_model_id = getattr(args, 'transcribe_model', 'openai/whisper-small')
+        transcribe_model_id = getattr(args, 'transcribe_model', 'UsefulSensors/moonshine-base')
         transcribe_weights_dir = get_weights_dir(transcribe_model_id)
 
         if transcribe_weights_dir.exists():
@@ -856,7 +856,7 @@ def create_parser():
 
     Optional flags:
     --model <model>                    default: LFM2-VL-450M
-    --transcribe_model <model>         default: whisper-small
+    --transcribe_model <model>         default: moonshine-base
     --precision INT4|INT8|FP16         regenerates weights with precision
     --no-rebuild                       skip building library and tests
     --ios                              run on connected iPhone
@@ -940,7 +940,7 @@ def create_parser():
     test_parser = subparsers.add_parser('test', help='Run the test suite')
     test_parser.add_argument('--model', default='LiquidAI/LFM2-VL-450M',
                              help='Model to use for tests')
-    test_parser.add_argument('--transcribe_model', default='openai/whisper-small',
+    test_parser.add_argument('--transcribe_model', default='UsefulSensors/moonshine-base',
                              help='Transcribe model to use')
     test_parser.add_argument('--precision', choices=['INT4', 'INT8', 'FP16'],
                              help='Regenerate weights with this precision (deletes existing weights)')

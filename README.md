@@ -101,10 +101,10 @@ graph.hard_reset();
 
 | Device | LFM2.5-1.2B<br>(1k-Prefill/100-Decode) | LFM2.5-VL-1.6B<br>(256px-Latency & Decode) | Whisper-Small<br>(30s-audio-Latency & Decode)
 |--------|--------|--------|----------|
-| Mac M4 Pro | 582/77 toks/sec| 1.2s(0.3s*) & 76 toks/sec | 1.5s(0.2s*) & 65 toks/sec |
+| Mac M4 Pro | 582/77 tps| 1.2s(0.3s*) & 76 tps | 1.5s(0.2s*) & 65 tps |
 | iPad/Mac M4 | - | - | - |
-| iPhone 17 Pro | 300/33 toks/sec | 1.6s(0.3s*) & 33 toks/sec | 3.0s(0.6s*) & 70 toks/sec |
-| Galaxy S25 Ultra | 226/35 toks/sec | 2.6s & 35 toks/sec | 2.9s & 44 toks/sec |
+| iPhone 17 Pro | 300/33 tps | 1.6s(0.3s*) & 33 tps | 3.0s(0.6s*) & 70 tps |
+| Galaxy S25 Ultra | 226/35 tps | 2.6s & 35 tps | 2.9s & 44 tps |
 | Pixel 10 Pro | - | - | - |
 | Vivo X200 Pro | - | - | - |
 
@@ -118,7 +118,7 @@ graph.hard_reset();
 | iPad/Mac M1 | - | - | - |
 | iPhone 13 Mini | - | - | - |
 | Galaxy A56 | - | - | - |
-| Pixel 6a | 218/44 toks/sec | 3.0s & 42 toks/sec | - |
+| Pixel 6a | 218/44 tps | 3.0s & 42 tps | 1.8s & 138 tps |
 | Nothing CMF | - | - | - |
 | Raspberry Pi 5 | - | - | - |
 
