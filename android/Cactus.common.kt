@@ -3,8 +3,6 @@ package com.cactus
 expect class Cactus : AutoCloseable {
     companion object {
         fun create(modelPath: String, corpusDir: String? = null): Cactus
-        fun setTelemetryToken(token: String)
-        fun setProKey(key: String)
     }
 
     fun complete(prompt: String, options: CompletionOptions = CompletionOptions()): CompletionResult

@@ -96,12 +96,6 @@ _lib.cactus_destroy.restype = None
 _lib.cactus_get_last_error.argtypes = []
 _lib.cactus_get_last_error.restype = ctypes.c_char_p
 
-_lib.cactus_set_telemetry_token.argtypes = [ctypes.c_char_p]
-_lib.cactus_set_telemetry_token.restype = None
-
-_lib.cactus_set_pro_key.argtypes = [ctypes.c_char_p]
-_lib.cactus_set_pro_key.restype = None
-
 _lib.cactus_tokenize.argtypes = [
     ctypes.c_void_p,
     ctypes.c_char_p,
@@ -419,20 +413,6 @@ def cactus_get_last_error():
     """Get the last error message, or None if no error."""
     result = _lib.cactus_get_last_error()
     return result.decode() if result else None
-
-
-def cactus_set_telemetry_token(token):
-    """Set telemetry token for usage tracking."""
-    _lib.cactus_set_telemetry_token(
-        token.encode() if isinstance(token, str) else token
-    )
-
-
-def cactus_set_pro_key(pro_key):
-    """Set Cactus Pro key for NPU acceleration (Apple devices)."""
-    _lib.cactus_set_pro_key(
-        pro_key.encode() if isinstance(pro_key, str) else pro_key
-    )
 
 
 def cactus_tokenize(model, text: str):

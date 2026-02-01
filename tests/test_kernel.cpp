@@ -212,36 +212,63 @@ bool test_neon_attention_fp16_correctness() {
 }
 
 bool test_matmul_int8_grouped_correctness() {
-    // Kernel processes 64 K elements at a time, so group_size must be >= 64
     const size_t M = 2, K = 128, N = 4;
-    const size_t group_size = 64;
+    const size_t group_size = 32;
     const size_t num_groups = K / group_size;
+    const size_t BLOCK_SIZE = 4;
 
     std::vector<__fp16> A(M * K);
     for (size_t i = 0; i < M * K; ++i) {
         A[i] = static_cast<__fp16>((static_cast<float>(rand()) / RAND_MAX - 0.5f) * 0.5f);
     }
 
-    std::vector<int8_t> B(N * K);
+    std::vector<int8_t> B_rowmajor(N * K);
     for (size_t i = 0; i < N * K; ++i) {
-        B[i] = static_cast<int8_t>((rand() % 128) - 64);
+        B_rowmajor[i] = static_cast<int8_t>((rand() % 128) - 64);
     }
 
-    std::vector<__fp16> B_scales(N * num_groups);
+    std::vector<__fp16> B_scales_rowmajor(N * num_groups);
     for (size_t n = 0; n < N; ++n) {
         for (size_t g = 0; g < num_groups; ++g) {
             float max_abs = 0.0f;
             for (size_t k = 0; k < group_size; ++k) {
-                float val = std::abs(static_cast<float>(B[n * K + g * group_size + k]));
+                float val = std::abs(static_cast<float>(B_rowmajor[n * K + g * group_size + k]));
                 if (val > max_abs) max_abs = val;
             }
             float scale = max_abs / 127.0f;
             if (scale < 1e-6f) scale = 1e-6f;
-            B_scales[n * num_groups + g] = static_cast<__fp16>(scale);
+            B_scales_rowmajor[n * num_groups + g] = static_cast<__fp16>(scale);
         }
     }
 
-    // Pre-quantize A to INT8 + scales
+    std::vector<int8_t> B_interleaved(N * K);
+    size_t N_blocks = N / BLOCK_SIZE;
+    size_t K_blocks = K / BLOCK_SIZE;
+    for (size_t n_blk = 0; n_blk < N_blocks; ++n_blk) {
+        for (size_t k_blk = 0; k_blk < K_blocks; ++k_blk) {
+            for (size_t ni = 0; ni < BLOCK_SIZE; ++ni) {
+                for (size_t ki = 0; ki < BLOCK_SIZE; ++ki) {
+                    size_t src_n = n_blk * BLOCK_SIZE + ni;
+                    size_t src_k = k_blk * BLOCK_SIZE + ki;
+                    size_t dst_idx = (n_blk * K_blocks + k_blk) * (BLOCK_SIZE * BLOCK_SIZE) +
+                                     ni * BLOCK_SIZE + ki;
+                    B_interleaved[dst_idx] = B_rowmajor[src_n * K + src_k];
+                }
+            }
+        }
+    }
+
+    std::vector<__fp16> B_scales_interleaved(N * num_groups);
+    for (size_t n_blk = 0; n_blk < N_blocks; ++n_blk) {
+        for (size_t g = 0; g < num_groups; ++g) {
+            for (size_t ni = 0; ni < BLOCK_SIZE; ++ni) {
+                size_t src_n = n_blk * BLOCK_SIZE + ni;
+                size_t dst_idx = (n_blk * num_groups + g) * BLOCK_SIZE + ni;
+                B_scales_interleaved[dst_idx] = B_scales_rowmajor[src_n * num_groups + g];
+            }
+        }
+    }
+
     std::vector<int8_t> A_quant(M * K);
     std::vector<float> A_scales(M);
     for (size_t m = 0; m < M; ++m) {
@@ -254,8 +281,8 @@ bool test_matmul_int8_grouped_correctness() {
 
     std::vector<__fp16> C(M * N);
 
-    cactus_matmul_int8(A_quant.data(), A_scales.data(), B.data(), B_scales.data(), C.data(),
-                               M, K, N, group_size);
+    cactus_matmul_int8(A_quant.data(), A_scales.data(), B_interleaved.data(),
+                       B_scales_interleaved.data(), C.data(), M, K, N, group_size);
 
     std::vector<float> C_ref(M * N, 0.0f);
     for (size_t m = 0; m < M; ++m) {
@@ -267,25 +294,25 @@ bool test_matmul_int8_grouped_correctness() {
         float a_scale = a_max_abs / 127.0f;
         if (a_scale < 1e-10f) a_scale = 1e-10f;
 
-        std::vector<int8_t> A_quant(K);
+        std::vector<int8_t> A_quant_ref(K);
         for (size_t k = 0; k < K; ++k) {
             float val = static_cast<float>(A[m * K + k]) / a_scale;
             int32_t q = static_cast<int32_t>(std::round(val));
             q = std::max(-128, std::min(127, q));
-            A_quant[k] = static_cast<int8_t>(q);
+            A_quant_ref[k] = static_cast<int8_t>(q);
         }
 
         for (size_t n = 0; n < N; ++n) {
             float acc = 0.0f;
             for (size_t g = 0; g < num_groups; ++g) {
-                float b_scale = static_cast<float>(B_scales[n * num_groups + g]);
+                float b_scale = static_cast<float>(B_scales_rowmajor[n * num_groups + g]);
                 float combined_scale = a_scale * b_scale;
 
                 int32_t group_sum = 0;
                 for (size_t k = 0; k < group_size; ++k) {
                     size_t k_idx = g * group_size + k;
-                    group_sum += static_cast<int32_t>(A_quant[k_idx]) *
-                                 static_cast<int32_t>(B[n * K + k_idx]);
+                    group_sum += static_cast<int32_t>(A_quant_ref[k_idx]) *
+                                 static_cast<int32_t>(B_rowmajor[n * K + k_idx]);
                 }
                 acc += static_cast<float>(group_sum) * combined_scale;
             }

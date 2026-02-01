@@ -380,9 +380,9 @@ protected:
         throw std::runtime_error("Whisper requires mel+token forward().");
     }
 
-    size_t forward(const std::vector<float>& mel_bins, const std::vector<uint32_t>& tokens, bool use_cache = false) override;
+    size_t forward(const std::vector<float>& audio_features, const std::vector<uint32_t>& tokens, bool use_cache = false) override;
 
-    void run_encoder(const std::vector<float>& mel_bins);
+    void run_encoder(const std::vector<float>& audio_features);
     void reset_graph_side_cache_nodes();
 
     size_t run_decoder_step(const std::vector<uint32_t>& tokens, bool use_cache, bool last_token_only);
@@ -412,10 +412,10 @@ protected:
     
     size_t build_conv1d(CactusGraph* gb, size_t input);
 
-    uint32_t decode_with_audio(const std::vector<uint32_t>& tokens, const std::vector<float>& mel_bins,
+    uint32_t decode_with_audio(const std::vector<uint32_t>& tokens, const std::vector<float>& audio_features,
                                     float temperature = 0.0f, float top_p = 0.0f, size_t top_k = 0, const std::string& profile_file = "", float* out_entropy = nullptr) override;
 
-    std::vector<float> get_audio_embeddings(const std::vector<float>& mel_bins) override;
+    std::vector<float> get_audio_embeddings(const std::vector<float>& audio_features) override;
     
     void reset_cache() override;
 
@@ -433,6 +433,8 @@ private:
         size_t encoder_conv1_bias;
         size_t encoder_conv2_weight;
         size_t encoder_conv2_bias;
+        size_t encoder_conv3_weight;
+        size_t encoder_conv3_bias;
         size_t encoder_norm_weight;
         size_t encoder_norm_bias;
 
@@ -501,8 +503,6 @@ private:
 
     bool encoder_ready_ = false;
     size_t last_new_tokens_;
-    std::vector<float> encoder_output_host_;
-    std::vector<size_t> encoder_output_shape_;
     size_t last_conv1_node_ = 0;
     size_t last_conv2_node_ = 0;
     size_t last_encoder_post_norm_node_ = 0;
@@ -512,8 +512,8 @@ private:
     size_t encoder_post_gelu = 0;
 
     std::vector<size_t> encoder_block_out_nodes_;
-    std::vector<uint8_t> encoder_output_bytes_;
-    Precision encoder_output_precision_ = Precision::FP32;
+
+    size_t encoder_output_persistent_ = 0;
 
     std::vector<size_t> suppress_tokens_ = {
     1,
@@ -613,13 +613,168 @@ private:
 
     bool first_decode_step_ = true;
 
-    std::vector<size_t> encoder_k_nodes_;
-    std::vector<size_t> encoder_v_nodes_;
+    std::vector<size_t> encoder_k_persistent_;
+    std::vector<size_t> encoder_v_persistent_;
 
-    std::vector<std::vector<uint8_t>> encoder_k_host_;
-    std::vector<std::vector<uint8_t>> encoder_v_host_;
-    std::vector<std::vector<size_t>>  encoder_k_shape_;
-    std::vector<std::vector<size_t>>  encoder_v_shape_;
+    std::unique_ptr<npu::NPUEncoder> npu_encoder_;
+    bool use_npu_encoder_ = false;
+
+};
+
+
+class MoonshineModel : public Model {
+public:
+    MoonshineModel();
+    explicit MoonshineModel(const Config& config);
+    ~MoonshineModel() override = default;
+
+protected:
+    size_t build_attention(CactusGraph*, size_t, uint32_t,ComputeBackend, bool, size_t) override {
+        throw std::runtime_error("Moonshine: build_attention unused");
+    }
+
+    size_t build_mlp(CactusGraph*, size_t, uint32_t, ComputeBackend) const override {
+        throw std::runtime_error("Moonshine: build_mlp unused");
+    }
+
+    size_t build_transformer_block(CactusGraph*, size_t, uint32_t, ComputeBackend, bool, size_t) override {
+        throw std::runtime_error("Moonshine: build_transformer_block unused");
+    }
+
+    size_t forward(const std::vector<uint32_t>& /*tokens*/, bool /*use_cache*/ = false) override {
+        throw std::runtime_error("Moonshine requires mel+token forward().");
+    }
+
+    size_t forward(const std::vector<float>& audio_features, const std::vector<uint32_t>& tokens, bool use_cache = false) override;
+
+    size_t build_encoder(CactusGraph* gb, const std::vector<float>& audio_features);
+    
+    void reset_graph_side_cache_nodes();
+
+    size_t build_decoder(const std::vector<uint32_t>& tokens, bool use_cache, bool last_token_only);
+
+    void load_weights_to_graph(CactusGraph* gb) override;
+
+    size_t build_decoder_cross_attention(CactusGraph* gb, size_t normalized_input, uint32_t layer_idx,
+                          ComputeBackend backend, bool use_cache = false, size_t position_offset = 0);
+    
+    size_t build_decoder_self_attention(CactusGraph* gb, size_t normalized_input, uint32_t layer_idx,
+                          ComputeBackend backend, bool use_cache = false, size_t position_offset = 0);
+
+    size_t build_encoder_self_attention(CactusGraph* gb, size_t normalized_input, uint32_t layer_idx,
+                          ComputeBackend backend, bool use_cache = false, size_t position_offset = 0);
+
+    size_t build_encoder_mlp(CactusGraph* gb, size_t normalized_h, uint32_t layer_idx,
+                    ComputeBackend backend);
+    
+    size_t build_decoder_mlp(CactusGraph* gb, size_t normalized_h, uint32_t layer_idx,
+                    ComputeBackend backend) const;
+    
+    size_t build_encoder_transformer_block(CactusGraph* gb, size_t hidden, uint32_t layer_idx,
+                                  ComputeBackend backend, bool use_cache = false, size_t position_offset = 0);
+    
+    size_t build_decoder_transformer_block(CactusGraph* gb, size_t hidden, uint32_t layer_idx,
+                                  ComputeBackend backend, bool use_cache = false, size_t position_offset = 0);
+    
+    size_t build_conv1d(CactusGraph* gb, size_t input);
+    size_t build_audio_preprocessor(CactusGraph* gb, size_t input);
+
+    uint32_t decode_with_audio(const std::vector<uint32_t>& tokens, const std::vector<float>& audio_features,
+                                    float temperature = 0.0f, float top_p = 0.0f, size_t top_k = 0, const std::string& profile_file = "", float* out_entropy = nullptr) override;
+
+    std::vector<float> get_audio_embeddings(const std::vector<float>& audio_features) override;
+    
+    void reset_cache() override;
+
+private:
+    struct WeightNodeIDs {
+        size_t output_weight;
+
+        size_t decoder_norm_weight;
+
+        size_t encoder_conv1_weight;
+        size_t encoder_conv2_weight;
+        size_t encoder_conv2_bias;
+        size_t encoder_conv3_weight;
+        size_t encoder_conv3_bias;
+        size_t encoder_norm_weight;
+        size_t encoder_norm_bias;
+        size_t encoder_layer_norm_weight;
+
+
+        struct LayerWeights {
+            //Decoder layers
+
+            size_t decoder_encoder_attn_q_weight;
+            size_t decoder_encoder_attn_k_weight;
+            size_t decoder_encoder_attn_v_weight;
+            size_t decoder_encoder_attn_output_weight;
+
+            size_t decoder_post_encoder_layernorm_weight;
+
+            size_t decoder_ffn1_weight;
+            size_t decoder_ffn1_bias;
+            size_t decoder_ffn_gate_weight;
+            size_t decoder_ffn_gate_bias;
+            size_t decoder_ffn_up_weight;
+            size_t decoder_ffn_up_bias;
+            size_t decoder_ffn2_weight;
+            size_t decoder_ffn2_bias;
+
+            size_t decoder_post_ffn_layernorm_weight;
+            
+            size_t decoder_self_attn_q_weight;
+            size_t decoder_self_attn_k_weight;
+            size_t decoder_self_attn_v_weight;
+            size_t decoder_self_attn_output_weight;
+
+            size_t decoder_post_attn_layernorm_weight;
+
+            //Encoder layers
+            size_t encoder_ffn1_weight;
+            size_t encoder_ffn1_bias;
+            size_t encoder_ffn_gate_weight;
+            size_t encoder_ffn_gate_bias;
+            size_t encoder_ffn_up_weight;
+            size_t encoder_ffn_up_bias;
+            size_t encoder_ffn2_weight;
+            size_t encoder_ffn2_bias;
+
+            size_t encoder_post_ffn_layernorm_weight;
+            
+            size_t encoder_self_attn_q_weight;
+            size_t encoder_self_attn_k_weight;
+            size_t encoder_self_attn_v_weight;
+            size_t encoder_self_attn_output_weight;
+
+            size_t encoder_post_attn_layernorm_weight;
+        };
+
+        std::vector<LayerWeights> encoder_layers;
+        std::vector<LayerWeights> decoder_layers;
+    } weight_nodes_;
+
+    bool encoder_ready_ = false;
+    size_t last_new_tokens_;
+    std::vector<float> encoder_output_host_;
+    std::vector<size_t> encoder_output_shape_;
+    size_t last_conv1_node_ = 0;
+    size_t last_conv2_node_ = 0;
+    size_t last_encoder_post_norm_node_ = 0;
+    size_t last_enc_plus_pos_node_ = 0;
+    size_t encoder_transformer_block_0 = 0;
+    size_t encoder_pre_gelu = 0;
+    size_t encoder_post_gelu = 0;
+
+    std::vector<size_t> encoder_block_out_nodes_;
+    std::vector<uint8_t> encoder_output_bytes_;
+    Precision encoder_output_precision_ = Precision::FP32;
+
+    bool first_decode_step_ = true;
+
+    std::vector<size_t> encoder_k_persistent_;
+    std::vector<size_t> encoder_v_persistent_;
+
     Precision encoder_kv_precision_ = Precision::FP32;
     bool encoder_kv_ready_ = false;
 

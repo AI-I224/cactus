@@ -126,8 +126,6 @@ typedef CactusIndexCompactNative = Int32 Function(CactusIndexT index);
 typedef CactusIndexDestroyNative = Void Function(CactusIndexT index);
 
 typedef CactusGetLastErrorNative = Pointer<Utf8> Function();
-typedef CactusSetTelemetryTokenNative = Void Function(Pointer<Utf8> token);
-typedef CactusSetProKeyNative = Void Function(Pointer<Utf8> proKey);
 
 
 typedef CactusInitDart = CactusModelT Function(
@@ -244,8 +242,6 @@ typedef CactusIndexCompactDart = int Function(CactusIndexT index);
 typedef CactusIndexDestroyDart = void Function(CactusIndexT index);
 
 typedef CactusGetLastErrorDart = Pointer<Utf8> Function();
-typedef CactusSetTelemetryTokenDart = void Function(Pointer<Utf8> token);
-typedef CactusSetProKeyDart = void Function(Pointer<Utf8> proKey);
 
 
 DynamicLibrary _loadLibrary() {
@@ -316,10 +312,6 @@ final _cactusIndexDestroy =
     _lib.lookupFunction<CactusIndexDestroyNative, CactusIndexDestroyDart>('cactus_index_destroy');
 final _cactusGetLastError = _lib
     .lookupFunction<CactusGetLastErrorNative, CactusGetLastErrorDart>('cactus_get_last_error');
-final _cactusSetTelemetryToken = _lib.lookupFunction<CactusSetTelemetryTokenNative,
-    CactusSetTelemetryTokenDart>('cactus_set_telemetry_token');
-final _cactusSetProKey =
-    _lib.lookupFunction<CactusSetProKeyNative, CactusSetProKeyDart>('cactus_set_pro_key');
 
 // ----------------------------------------------------------------------------
 // Helper Extensions
@@ -901,24 +893,6 @@ class Cactus {
 
   static String getLastError() {
     return _cactusGetLastError().toDartString();
-  }
-
-  static void setTelemetryToken(String token) {
-    final tokenPtr = token.toNativeUtf8();
-    try {
-      _cactusSetTelemetryToken(tokenPtr);
-    } finally {
-      calloc.free(tokenPtr);
-    }
-  }
-
-  static void setProKey(String key) {
-    final keyPtr = key.toNativeUtf8();
-    try {
-      _cactusSetProKey(keyPtr);
-    } finally {
-      calloc.free(keyPtr);
-    }
   }
 }
 

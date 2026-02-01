@@ -21,19 +21,9 @@ class Cactus private constructor(private var handle: Long) : Closeable {
         }
 
         @JvmStatic
-        fun setTelemetryToken(token: String) = nativeSetTelemetryToken(token)
-
-        @JvmStatic
-        fun setProKey(key: String) = nativeSetProKey(key)
-
-        @JvmStatic
         private external fun nativeInit(modelPath: String, corpusDir: String?): Long
         @JvmStatic
         private external fun nativeGetLastError(): String
-        @JvmStatic
-        private external fun nativeSetTelemetryToken(token: String)
-        @JvmStatic
-        private external fun nativeSetProKey(key: String)
     }
 
     fun complete(prompt: String, options: CompletionOptions = CompletionOptions()): CompletionResult {
@@ -198,18 +188,14 @@ class Cactus private constructor(private var handle: Long) : Closeable {
 
 class StreamTranscriber internal constructor(private var handle: Long) : Closeable {
 
-    fun insert(pcmData: ByteArray) {
+    /**
+     * Process a chunk of PCM audio data and get intermediate transcription results.
+     * @param pcmData Raw PCM audio data (16-bit signed, mono, 16kHz)
+     * @return Intermediate transcription result
+     */
+    fun process(pcmData: ByteArray): TranscriptionResult {
         checkHandle()
-        val result = nativeStreamTranscribeInsert(handle, pcmData)
-        if (result < 0) {
-            throw CactusException("Failed to insert audio data")
-        }
-    }
-
-    fun process(language: String? = null): TranscriptionResult {
-        checkHandle()
-        val optionsJson = language?.let { JSONObject().put("language", it).toString() }
-        val responseJson = nativeStreamTranscribeProcess(handle, optionsJson)
+        val responseJson = nativeStreamTranscribeProcess(handle, pcmData)
         val json = JSONObject(responseJson)
         if (json.has("error")) {
             throw CactusException(json.getString("error"))
@@ -217,9 +203,15 @@ class StreamTranscriber internal constructor(private var handle: Long) : Closeab
         return json.toTranscriptionResult()
     }
 
-    fun finalize(): TranscriptionResult {
+    /**
+     * Stop the streaming transcription and get the final result.
+     * This also releases the stream resources.
+     * @return Final transcription result
+     */
+    fun stop(): TranscriptionResult {
         checkHandle()
-        val responseJson = nativeStreamTranscribeFinalize(handle)
+        val responseJson = nativeStreamTranscribeStop(handle)
+        handle = 0L  // Stream is now closed
         val json = JSONObject(responseJson)
         if (json.has("error")) {
             throw CactusException(json.getString("error"))
@@ -229,7 +221,12 @@ class StreamTranscriber internal constructor(private var handle: Long) : Closeab
 
     override fun close() {
         if (handle != 0L) {
-            nativeStreamTranscribeDestroy(handle)
+            // Stop also closes the stream
+            try {
+                nativeStreamTranscribeStop(handle)
+            } catch (_: Exception) {
+                // Ignore errors during close
+            }
             handle = 0L
         }
     }
@@ -240,10 +237,8 @@ class StreamTranscriber internal constructor(private var handle: Long) : Closeab
         }
     }
 
-    private external fun nativeStreamTranscribeInsert(handle: Long, pcmData: ByteArray): Int
-    private external fun nativeStreamTranscribeProcess(handle: Long, optionsJson: String?): String
-    private external fun nativeStreamTranscribeFinalize(handle: Long): String
-    private external fun nativeStreamTranscribeDestroy(handle: Long)
+    private external fun nativeStreamTranscribeProcess(handle: Long, pcmData: ByteArray): String
+    private external fun nativeStreamTranscribeStop(handle: Long): String
 }
 
 class CactusIndex private constructor(private var handle: Long) : Closeable {

@@ -30,6 +30,7 @@ if(APPLE)
     find_package(CURL REQUIRED)
     find_library(COREML_FRAMEWORK CoreML REQUIRED)
     find_library(FOUNDATION_FRAMEWORK Foundation REQUIRED)
+    find_library(ACCELERATE_FRAMEWORK Accelerate REQUIRED)
 else()
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -march=armv8.2-a+fp16+simd+dotprod+i8mm -pthread -Wall -Wextra -pedantic -O3 -Wno-missing-field-initializers")
     add_compile_definitions(
@@ -47,19 +48,12 @@ file(GLOB FFI_SOURCES "ffi/*.cpp")
 file(GLOB MODEL_SOURCES "models/*.cpp")
 file(GLOB INDEX_SOURCES "index/*.cpp")
 
-file(GLOB NPU_SOURCES "npu/*.cpp")
-
-set(CACTUS_PRO_LIB "${CMAKE_CURRENT_SOURCE_DIR}/../libs/libcactus_pro.a")
-if(APPLE AND EXISTS ${CACTUS_PRO_LIB})
-    message(STATUS "Found libcactus_pro.a - NPU acceleration enabled")
-    set(CACTUS_HAS_PRO TRUE)
+if(APPLE)
+    set(NPU_SOURCES "npu/npu_ane.mm")
+    set_source_files_properties(npu/npu_ane.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
+    message(STATUS "Apple platform detected - NPU/ANE acceleration enabled")
 else()
-    if(NOT APPLE)
-        message(STATUS "Skipping libcactus_pro.a on non-Apple platform (using stubs)")
-    else()
-        message(STATUS "libcactus_pro.a not found - NPU acceleration disabled (using stubs)")
-    endif()
-    set(CACTUS_HAS_PRO FALSE)
+    set(NPU_SOURCES "npu/npu.cpp")
 endif()
 
 set(COMMON_SOURCES
@@ -98,19 +92,11 @@ function(configure_cactus_target target_name)
         target_compile_options(${target_name} PRIVATE -Wno-pedantic)
     endif()
 
-    if(CACTUS_HAS_PRO)
-        if(APPLE)
-            target_link_libraries(${target_name} PUBLIC "-force_load ${CACTUS_PRO_LIB}")
-        else()
-            target_link_libraries(${target_name} PUBLIC
-                "-Wl,--whole-archive" ${CACTUS_PRO_LIB} "-Wl,--no-whole-archive")
-        endif()
-    endif()
-
     if(APPLE)
         target_link_libraries(${target_name} PUBLIC
             ${COREML_FRAMEWORK}
             ${FOUNDATION_FRAMEWORK}
+            ${ACCELERATE_FRAMEWORK}
             ${CURL_LIBRARIES}
         )
         target_include_directories(${target_name} PUBLIC ${CURL_INCLUDE_DIRS})

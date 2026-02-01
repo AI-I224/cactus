@@ -26,6 +26,8 @@ def detect_model_type(cfg, config, output_dir=None):
         return 'lfm2'
     elif 'qwen' in model_type_str:
         return 'qwen'
+    elif 'moonshine' in model_type_str:
+        return 'moonshine'
     elif 'llama' in model_type_str:
         if output_dir and 'smol' in str(output_dir):
             return 'smol'
@@ -104,6 +106,13 @@ def extract_lfm2_config(cfg):
     return {
         'layer_types': layer_types,
         'conv_L_cache': conv_L_cache,
+    }
+
+def extract_moonshine_config(cfg):
+    """Extract Moonshine-specific configuration parameters."""
+    rot_factor = getattr(cfg, "partial_rotary_factor", 0.9)
+    return {
+        'partial_rotary_factor': rot_factor,
     }
 
 

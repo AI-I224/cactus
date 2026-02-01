@@ -185,8 +185,6 @@ CactusIndex.create("/path/to/index", embeddingDim = 384).use { index ->
 ```kotlin
 object Cactus {
     fun create(modelPath: String, corpusDir: String? = null): Cactus
-    fun setTelemetryToken(token: String)
-    fun setProKey(key: String)
 }
 
 fun complete(prompt: String, options: CompletionOptions = CompletionOptions()): CompletionResult

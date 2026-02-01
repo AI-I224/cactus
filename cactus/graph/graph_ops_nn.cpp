@@ -348,7 +348,7 @@ void compute_attention_int8_hybrid_node(GraphNode& node, const std::vector<std::
 void compute_layernorm_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map) {
     const auto& input_buffer = nodes[node_index_map.at(node.input_ids[0])]->output_buffer;
     const auto& weight_buffer = nodes[node_index_map.at(node.input_ids[1])]->output_buffer;
-    const auto& bias_buffer = nodes[node_index_map.at(node.input_ids[2])]->output_buffer;
+    bool has_bias = node.input_ids.size() > 2;
     float epsilon = node.params.epsilon;
 
     if (input_buffer.shape.empty()) {
@@ -360,7 +360,7 @@ void compute_layernorm_node(GraphNode& node, const std::vector<std::unique_ptr<G
 
     std::vector<float> input_float(input_buffer.total_size);
     std::vector<float> weight_float(feature_size);
-    std::vector<float> bias_float(feature_size);
+    std::vector<float> bias_float(feature_size, 0.0f);
 
     if (input_buffer.precision == Precision::INT8) {
         throw std::runtime_error("LayerNorm currently does not support INT8 input");
@@ -384,15 +384,18 @@ void compute_layernorm_node(GraphNode& node, const std::vector<std::unique_ptr<G
         std::memcpy(weight_float.data(), weight_buffer.data_as<float>(), feature_size * sizeof(float));
     }
 
-    if (bias_buffer.precision == Precision::INT8) {
-        throw std::runtime_error("LayerNorm currently does not support INT8 bias");
-    } else if (bias_buffer.precision == Precision::FP16) {
-        const __fp16* bias_fp16 = bias_buffer.data_as<__fp16>();
-        for (size_t i = 0; i < feature_size; ++i) {
-            bias_float[i] = static_cast<float>(bias_fp16[i]);
+    if (has_bias) {
+        const auto& bias_buffer = nodes[node_index_map.at(node.input_ids[2])]->output_buffer;
+        if (bias_buffer.precision == Precision::INT8) {
+            throw std::runtime_error("LayerNorm currently does not support INT8 bias");
+        } else if (bias_buffer.precision == Precision::FP16) {
+            const __fp16* bias_fp16 = bias_buffer.data_as<__fp16>();
+            for (size_t i = 0; i < feature_size; ++i) {
+                bias_float[i] = static_cast<float>(bias_fp16[i]);
+            }
+        } else {
+            std::memcpy(bias_float.data(), bias_buffer.data_as<float>(), feature_size * sizeof(float));
         }
-    } else {
-        std::memcpy(bias_float.data(), bias_buffer.data_as<float>(), feature_size * sizeof(float));
     }
 
     std::vector<float> output_float(input_buffer.total_size);
@@ -579,5 +582,147 @@ void compute_conv1d_k3_node(GraphNode& node, const std::vector<std::unique_ptr<G
         );
     } else {
         throw std::runtime_error("Conv1d_k3 only supports FP16 and INT8 weights");
+    }
+}
+
+void compute_conv1d_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes,
+                         const std::unordered_map<size_t, size_t>& node_index_map) {
+    const auto& X = nodes[node_index_map.at(node.input_ids[0])]->output_buffer;
+    const auto& W = nodes[node_index_map.at(node.input_ids[1])]->output_buffer;
+
+    const __fp16* bias_ptr = (node.input_ids.size() > 2) ?
+        nodes[node_index_map.at(node.input_ids[2])]->output_buffer.data_as<__fp16>() : nullptr;
+
+    auto& Y = node.output_buffer;
+
+    const size_t N = X.shape[0];
+    const size_t C_in = X.shape[1];
+    const size_t L = X.shape[2];
+    const size_t C_out = W.shape[0];
+    const size_t K = W.shape[2];
+    const size_t stride = node.params.stride;
+
+    if (X.precision != Precision::FP16 || W.precision != Precision::FP16) {
+        throw std::runtime_error("Conv1d only supports FP16");
+    }
+
+    cactus_conv1d_f16(X.data_as<__fp16>(), W.data_as<__fp16>(), bias_ptr,
+                      Y.data_as<__fp16>(), N, L, C_in, C_out, K, stride);
+}
+
+void compute_conv1d_k7s3_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes,
+                         const std::unordered_map<size_t, size_t>& node_index_map) {
+    const auto& X = nodes[node_index_map.at(node.input_ids[0])]->output_buffer;
+    const auto& W = nodes[node_index_map.at(node.input_ids[1])]->output_buffer; // Expected packed [C_in, K, C_out]
+
+    const __fp16* bias_ptr = (node.input_ids.size() > 2) ?
+        nodes[node_index_map.at(node.input_ids[2])]->output_buffer.data_as<__fp16>() : nullptr;
+
+    auto& Y = node.output_buffer;
+
+    const size_t N = X.shape[0];
+    const size_t C_in = X.shape[1];
+    const size_t L = X.shape[2];
+    
+    if (W.shape.size() != 3) throw std::runtime_error("Weight must be 3D");
+    const size_t C_in_W = W.shape[0];
+    const size_t K = W.shape[1];
+    const size_t C_out = W.shape[2];
+    const size_t stride = node.params.stride;
+
+    if (C_in != C_in_W) throw std::runtime_error("Channel mismatch in conv1d_k7s3");
+    if (K != 7 || stride != 3) throw std::runtime_error("conv1d_k7s3 requires K=7, stride=3");
+
+    if (X.precision != Precision::FP16 || W.precision != Precision::FP16) {
+        throw std::runtime_error("Conv1d specialized only supports FP16");
+    }
+    
+    size_t L_out = (L < 7) ? 0 : (L - 7) / 3 + 1;
+    Y.shape = {N, C_out, L_out};
+    Y.precision = Precision::FP16;
+
+    cactus_conv1d_f16_k7s3_oc8(
+        X.data_as<__fp16>(), 
+        W.data_as<__fp16>(), 
+        bias_ptr,
+        Y.data_as<__fp16>(), 
+        N, L, C_in, C_out
+    );
+}
+
+void compute_rope_gptj_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes,
+                            const std::unordered_map<size_t, size_t>& node_index_map) {
+    const auto& input_buffer = nodes[node_index_map.at(node.input_ids[0])]->output_buffer;
+    const auto& shape = input_buffer.shape;
+
+    size_t batch_size = shape[0];
+    size_t seq_len = shape[1];
+    size_t num_heads = shape[2];
+    size_t head_dim = shape[3];
+    size_t rot_dim = static_cast<size_t>(node.params.scalar);
+
+    cactus_gpt_j_rope_f16(input_buffer.data_as<__fp16>(), node.output_buffer.data_as<__fp16>(),
+                          batch_size, seq_len, num_heads, head_dim, rot_dim,
+                          node.params.position_offset, node.params.theta);
+}
+
+void compute_groupnorm_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes,
+                            const std::unordered_map<size_t, size_t>& node_index_map) {
+    const auto& input = nodes[node_index_map.at(node.input_ids[0])]->output_buffer;
+    const auto& weight = nodes[node_index_map.at(node.input_ids[1])]->output_buffer;
+    const auto& bias = nodes[node_index_map.at(node.input_ids[2])]->output_buffer;
+    float epsilon = node.params.epsilon;
+
+    size_t batch_size = input.shape[0];
+    size_t channels = input.shape[1];
+    size_t spatial_size = 1;
+    for (size_t i = 2; i < input.shape.size(); ++i) spatial_size *= input.shape[i];
+
+    size_t num_groups = node.params.num_groups;
+    if (num_groups == 0) num_groups = 32;
+    
+    if (channels % num_groups != 0) {
+        throw std::runtime_error("GroupNorm: channels must be divisible by num_groups");
+    }
+
+    size_t channels_per_group = channels / num_groups;
+
+    const __fp16* src = input.data_as<__fp16>();
+    const __fp16* w = weight.data_as<__fp16>();
+    const __fp16* b = bias.data_as<__fp16>();
+    __fp16* dst = node.output_buffer.data_as<__fp16>();
+
+    for (size_t n = 0; n < batch_size; ++n) {
+        for (size_t g = 0; g < num_groups; ++g) {
+            float sum = 0.0f, sum_sq = 0.0f;
+            size_t count = 0;
+
+            for (size_t c = 0; c < channels_per_group; ++c) {
+                size_t ch = g * channels_per_group + c;
+                for (size_t s = 0; s < spatial_size; ++s) {
+                    size_t idx = n * channels * spatial_size + ch * spatial_size + s;
+                    float val = static_cast<float>(src[idx]);
+                    sum += val;
+                    sum_sq += val * val;
+                    count++;
+                }
+            }
+
+            float mean = sum / count;
+            float var = (sum_sq / count) - (mean * mean);
+            float inv_std = 1.0f / std::sqrt(var + epsilon);
+
+            for (size_t c = 0; c < channels_per_group; ++c) {
+                size_t ch = g * channels_per_group + c;
+                float wt = static_cast<float>(w[ch]);
+                float bi = static_cast<float>(b[ch]);
+
+                for (size_t s = 0; s < spatial_size; ++s) {
+                    size_t idx = n * channels * spatial_size + ch * spatial_size + s;
+                    float val = static_cast<float>(src[idx]);
+                    dst[idx] = static_cast<__fp16>((val - mean) * inv_std * wt + bi);
+                }
+            }
+        }
     }
 }

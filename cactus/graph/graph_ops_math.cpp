@@ -178,6 +178,11 @@ void compute_activation_node(GraphNode& node, const std::vector<std::unique_ptr<
                                 node.output_buffer.data_as<__fp16>(),
                                 node.output_buffer.total_size);
             break;
+        case OpType::TANH:
+            cactus_tanh_f16(input.data_as<__fp16>(),
+                            node.output_buffer.data_as<__fp16>(),
+                            node.output_buffer.total_size);
+            break;
         default:
             break;
     }

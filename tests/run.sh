@@ -37,12 +37,17 @@ while [[ $# -gt 0 ]]; do
             NO_REBUILD=true
             shift
             ;;
+        --precision)
+            PRECISION="$2"
+            shift 2
+            ;;
         --help|-h)
             echo "Usage: $0 [OPTIONS]"
             echo ""
             echo "Options:"
             echo "  --model <name>            Model to use for tests (default: $DEFAULT_MODEL)"
             echo "  --transcribe_model <name> Transcribe model to use (default: $DEFAULT_TRANSCRIBE_MODEL)"
+            echo "  --precision <type>        Precision for model conversion (MIXED, FP16, INT8, INT4)"
             echo "  --android                 Run tests on Android device or emulator"
             echo "  --ios                     Run tests on iOS device or simulator"
             echo "  --no-rebuild              Skip building cactus library and tests"
@@ -60,15 +65,21 @@ done
 echo ""
 echo "Using model: $MODEL_NAME"
 echo "Using transcribe model: $TRANSCRIBE_MODEL_NAME"
+if [ ! -z "$PRECISION" ]; then
+    echo "Using precision: $PRECISION"
+    PRECISION_FLAG="--precision $PRECISION"
+else
+    PRECISION_FLAG=""
+fi
 
 echo ""
 echo "Step 1: Downloading model weights..."
-if ! cactus download "$MODEL_NAME"; then
+if ! cactus download "$MODEL_NAME" $PRECISION_FLAG; then
     echo "Failed to download model weights"
     exit 1
 fi
 
-if ! cactus download "$TRANSCRIBE_MODEL_NAME"; then
+if ! cactus download "$TRANSCRIBE_MODEL_NAME" $PRECISION_FLAG; then
     echo "Failed to download transcribe model weights"
     exit 1
 fi

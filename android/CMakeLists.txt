@@ -16,7 +16,7 @@ file(GLOB GRAPH_SOURCES "${SOURCE_DIR}/graph/*.cpp")
 file(GLOB KERNEL_SOURCES "${SOURCE_DIR}/kernel/*.cpp")
 file(GLOB MODEL_SOURCES "${SOURCE_DIR}/models/*.cpp")
 file(GLOB FFI_SOURCES "${SOURCE_DIR}/ffi/*.cpp")
-file(GLOB NPU_SOURCES "${SOURCE_DIR}/npu/*.cpp")
+set(NPU_SOURCES "${SOURCE_DIR}/npu/npu.cpp")
 
 set(HEADER_FILES
     ${SOURCE_DIR}/cactus.h

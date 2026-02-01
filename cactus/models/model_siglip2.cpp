@@ -277,7 +277,7 @@ size_t Siglip2VisionModel::forward_vision(
                 gb->soft_reset();
                 size_t vision_output = gb->input({total_patches, config_.vision_embed_dim},
                                                   Precision::FP16);
-                gb->set_input(vision_output, output_buffer, Precision::FP16);
+                gb->set_external_input(vision_output, output_buffer, Precision::FP16);
                 return vision_output;
             }
         } else {

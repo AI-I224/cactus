@@ -433,8 +433,8 @@ public final class Cactus: @unchecked Sendable {
         return Array(embeddingBuffer.prefix(embeddingDim))
     }
 
-    public func createStreamTranscriber() throws -> StreamTranscriber {
-        guard let streamHandle = cactus_stream_transcribe_init(handle) else {
+    public func createStreamTranscriber(options: TranscriptionOptions = .default) throws -> StreamTranscriber {
+        guard let streamHandle = cactus_stream_transcribe_start(handle, options.toJSON()) else {
             let error = String(cString: cactus_get_last_error())
             throw CactusError.transcriptionFailed(error.isEmpty ? "Unknown error" : error)
         }
@@ -447,15 +447,6 @@ public final class Cactus: @unchecked Sendable {
 
     public func stop() {
         cactus_stop(handle)
-    }
-
-
-    public static func setTelemetryToken(_ token: String) {
-        cactus_set_telemetry_token(token)
-    }
-
-    public static func setProKey(_ key: String) {
-        cactus_set_pro_key(key)
     }
 
 
@@ -587,46 +578,23 @@ public final class StreamTranscriber: @unchecked Sendable {
         close()
     }
 
-    public func insert(pcmData: Data) throws {
-        guard let handle = handle else {
-            throw Cactus.CactusError.transcriptionFailed("Stream transcriber has been closed")
-        }
-
-        let result = pcmData.withUnsafeBytes { pcmPtr in
-            cactus_stream_transcribe_insert(
-                handle,
-                pcmPtr.baseAddress?.assumingMemoryBound(to: UInt8.self),
-                pcmData.count
-            )
-        }
-
-        if result < 0 {
-            throw Cactus.CactusError.transcriptionFailed("Failed to insert audio data")
-        }
-    }
-
-    public func process(language: String? = nil) throws -> Cactus.TranscriptionResult {
+    public func process(pcmData: Data) throws -> Cactus.TranscriptionResult {
         guard let handle = handle else {
             throw Cactus.CactusError.transcriptionFailed("Stream transcriber has been closed")
         }
 
         var buffer = [CChar](repeating: 0, count: Self.defaultBufferSize)
-        var optionsJSON: String? = nil
-        if let lang = language {
-            let dict: [String: Any] = ["language": lang]
-            if let data = try? JSONSerialization.data(withJSONObject: dict),
-               let json = String(data: data, encoding: .utf8) {
-                optionsJSON = json
-            }
-        }
 
-        let result = buffer.withUnsafeMutableBufferPointer { bufferPtr in
-            cactus_stream_transcribe_process(
-                handle,
-                bufferPtr.baseAddress,
-                bufferPtr.count,
-                optionsJSON
-            )
+        let result = pcmData.withUnsafeBytes { pcmPtr in
+            buffer.withUnsafeMutableBufferPointer { bufferPtr in
+                cactus_stream_transcribe_process(
+                    handle,
+                    pcmPtr.baseAddress?.assumingMemoryBound(to: UInt8.self),
+                    pcmData.count,
+                    bufferPtr.baseAddress,
+                    bufferPtr.count
+                )
+            }
         }
 
         if result < 0 {
@@ -643,7 +611,7 @@ public final class StreamTranscriber: @unchecked Sendable {
         return Cactus.TranscriptionResult(json: json)
     }
 
-    public func finalize() throws -> Cactus.TranscriptionResult {
+    public func stop() throws -> Cactus.TranscriptionResult {
         guard let handle = handle else {
             throw Cactus.CactusError.transcriptionFailed("Stream transcriber has been closed")
         }
@@ -651,12 +619,14 @@ public final class StreamTranscriber: @unchecked Sendable {
         var buffer = [CChar](repeating: 0, count: Self.defaultBufferSize)
 
         let result = buffer.withUnsafeMutableBufferPointer { bufferPtr in
-            cactus_stream_transcribe_finalize(
+            cactus_stream_transcribe_stop(
                 handle,
                 bufferPtr.baseAddress,
                 bufferPtr.count
             )
         }
+
+        self.handle = nil  // Stream is now closed
 
         if result < 0 {
             let error = String(cString: cactus_get_last_error())
@@ -674,7 +644,10 @@ public final class StreamTranscriber: @unchecked Sendable {
 
     public func close() {
         if let handle = handle {
-            cactus_stream_transcribe_destroy(handle)
+            var buffer = [CChar](repeating: 0, count: Self.defaultBufferSize)
+            _ = buffer.withUnsafeMutableBufferPointer { bufferPtr in
+                cactus_stream_transcribe_stop(handle, bufferPtr.baseAddress, bufferPtr.count)
+            }
             self.handle = nil
         }
     }

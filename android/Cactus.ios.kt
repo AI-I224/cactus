@@ -17,14 +17,6 @@ actual class Cactus private constructor(private var handle: COpaquePointer?) : A
             }
             return Cactus(handle)
         }
-
-        actual fun setTelemetryToken(token: String) {
-            cactus_set_telemetry_token(token)
-        }
-
-        actual fun setProKey(key: String) {
-            cactus_set_pro_key(key)
-        }
     }
 
     actual fun complete(prompt: String, options: CompletionOptions): CompletionResult {

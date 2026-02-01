@@ -1,6 +1,5 @@
 #include "cactus_ffi.h"
 #include "cactus_utils.h"
-#include "cactus_telemetry.h"
 #include <string>
 #include <cstring>
 #include <algorithm>
@@ -345,8 +344,6 @@ const char* cactus_get_last_error() {
 }
 
 cactus_model_t cactus_init(const char* model_path, const char* corpus_dir) {
-    CactusTelemetry::getInstance().ensureInitialized();
-
     constexpr size_t DEFAULT_CONTEXT_SIZE = 512;  // matches default sliding window size
 
     std::string model_path_str = model_path ? std::string(model_path) : "unknown";
@@ -367,11 +364,6 @@ cactus_model_t cactus_init(const char* model_path, const char* corpus_dir) {
         if (!handle->model) {
             last_error_message = "Failed to create model - check config.txt exists at: " + model_path_str;
             CACTUS_LOG_ERROR("init", last_error_message);
-
-            CactusTelemetry::getInstance().recordInit(
-                model_name, false, last_error_message
-            );
-
             delete handle;
             return nullptr;
         }
@@ -379,11 +371,6 @@ cactus_model_t cactus_init(const char* model_path, const char* corpus_dir) {
         if (!handle->model->init(model_path, DEFAULT_CONTEXT_SIZE)) {
             last_error_message = "Failed to initialize model - check weight files at: " + model_path_str;
             CACTUS_LOG_ERROR("init", last_error_message);
-
-            CactusTelemetry::getInstance().recordInit(
-                model_name, false, last_error_message
-            );
-
             delete handle;
             return nullptr;
         }
@@ -401,28 +388,14 @@ cactus_model_t cactus_init(const char* model_path, const char* corpus_dir) {
 
         CACTUS_LOG_INFO("init", "Model loaded successfully: " << model_name);
 
-        CactusTelemetry::getInstance().recordInit(
-            model_name, true, "Model initialized successfully"
-        );
-
         return handle;
     } catch (const std::exception& e) {
         last_error_message = "Exception during init: " + std::string(e.what());
         CACTUS_LOG_ERROR("init", last_error_message);
-
-        CactusTelemetry::getInstance().recordInit(
-            model_name, false, last_error_message
-        );
-
         return nullptr;
     } catch (...) {
         last_error_message = "Unknown exception during model initialization";
         CACTUS_LOG_ERROR("init", last_error_message);
-
-        CactusTelemetry::getInstance().recordInit(
-            model_name, false, last_error_message
-        );
-
         return nullptr;
     }
 }

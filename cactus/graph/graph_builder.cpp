@@ -10,8 +10,7 @@ size_t CactusGraph::input(const std::vector<size_t>& shape, Precision precision)
 
 size_t CactusGraph::add(size_t input1, size_t input2) {
     const auto& lhs_buffer = get_output_buffer(input1);
-    const auto& rhs_buffer = get_output_buffer(input2);
-
+    const auto& rhs_buffer = get_output_buffer(input2);                  
     BroadcastInfo broadcast_info = BroadcastInfo::compute(lhs_buffer.shape, rhs_buffer.shape);
     OpParams params{.broadcast_info = broadcast_info};
 
@@ -61,7 +60,7 @@ size_t CactusGraph::divide(size_t input1, size_t input2) {
 size_t CactusGraph::matmul(size_t input1, size_t input2, bool pretransposed_rhs, ComputeBackend backend) {
     const auto& lhs_buffer = get_output_buffer(input1);
     const auto& rhs_buffer = get_output_buffer(input2);
-
+      
     if (lhs_buffer.shape.size() != 2 || rhs_buffer.shape.size() != 2) {
         throw std::invalid_argument("Matrix multiplication requires 2D tensors");
     }
@@ -79,6 +78,7 @@ size_t CactusGraph::matmul(size_t input1, size_t input2, bool pretransposed_rhs,
     }
 
     if (K != rhs_K) {
+        std::cout << "Matrix dimensions incompatible for multiplication: " << K << " != " << rhs_K << std::endl;
         throw std::invalid_argument("Matrix dimensions incompatible for multiplication");
     }
 
@@ -290,6 +290,16 @@ size_t CactusGraph::layernorm(size_t input, size_t weight, size_t bias, float ep
     return add_node(OpType::LAYERNORM, {input, weight, bias}, {}, params);
 }
 
+size_t CactusGraph::layernorm(size_t input, size_t weight, float epsilon) {
+    OpParams params{.epsilon = epsilon};
+    return add_node(OpType::LAYERNORM, {input, weight}, {}, params);
+}
+
+size_t CactusGraph::groupnorm(size_t input, size_t weight, size_t bias, size_t num_groups, float epsilon) {
+    OpParams params{.epsilon = epsilon, .num_groups = num_groups};
+    return add_node(OpType::GROUPNORM, {input, weight, bias}, {}, params);
+}
+
 size_t CactusGraph::attention(size_t query, size_t key, size_t value, float scale, bool is_causal, ComputeBackend backend) {
     OpParams params{.scale = scale, .is_causal = is_causal, .backend = backend};
     return add_node(OpType::ATTENTION, {query, key, value}, {}, params);
@@ -350,6 +360,68 @@ size_t CactusGraph::conv1d_k3(size_t input, size_t weight, size_t stride) {
 
     std::vector<size_t> out_shape{N, C_out, L_out};
     return add_node(OpType::CONV1D_K3, {input, weight}, out_shape, params);
+}
+
+size_t CactusGraph::conv1d_k7s3(size_t input, size_t weight, size_t bias) {
+    const auto& xin = get_output_buffer(input);
+    const auto& w   = get_output_buffer(weight);
+    const auto& b   = get_output_buffer(bias);
+
+    if (xin.shape.size() != 3) throw std::runtime_error("conv1d_k7s3 expects N,C,L");
+    if (w.shape.size() != 3) throw std::runtime_error("weight must be [C_in, 7, C_out]");
+    if (w.shape[0] != xin.shape[1]) throw std::runtime_error("C_in mismatch in conv1d_k7s3");
+    if (w.shape[1] != 7) throw std::runtime_error("K=7 expected in conv1d_k7s3");
+    
+    size_t C_out = w.shape[2];
+    if (b.total_size != C_out) throw std::runtime_error("Bias size mismatch");
+
+    const size_t N    = xin.shape[0];
+    const size_t L    = xin.shape[2];
+    const size_t K    = 7;
+    const size_t stride = 3;
+
+    const size_t L_out = (L < K) ? 0 : (L - K) / stride + 1;
+
+    OpParams params{};
+    params.stride = stride;
+    params.output_precision = xin.precision;
+
+    std::vector<size_t> out_shape{N, C_out, L_out};
+    return add_node(OpType::CONV1D_K7S3, {input, weight, bias}, out_shape, params);
+}
+
+size_t CactusGraph::conv1d(size_t input, size_t weight, size_t stride) {
+    const auto& xin = get_output_buffer(input);
+    const auto& w   = get_output_buffer(weight);
+    
+    if (xin.shape.size() != 3) throw std::runtime_error("conv1d expects N,C,L");
+    if (w.shape.size() != 3) throw std::runtime_error("conv1d weight expects [C_out, C_in, K]");
+    
+    size_t N = xin.shape[0];
+    size_t C_out = w.shape[0];
+    size_t L = xin.shape[2];
+    size_t K = w.shape[2];
+    size_t L_out = (L - K) / stride + 1;
+    
+    OpParams params{.stride = stride};
+    return add_node(OpType::CONV1D, {input, weight}, {N, C_out, L_out}, params);
+}
+
+size_t CactusGraph::conv1d(size_t input, size_t weight, size_t bias, size_t stride) {
+    const auto& xin = get_output_buffer(input);
+    const auto& w   = get_output_buffer(weight);
+    
+    if (xin.shape.size() != 3) throw std::runtime_error("conv1d expects N,C,L");
+    if (w.shape.size() != 3) throw std::runtime_error("conv1d weight expects [C_out, C_in, K]");
+    
+    size_t N = xin.shape[0];
+    size_t C_out = w.shape[0];
+    size_t L = xin.shape[2];
+    size_t K = w.shape[2];
+    size_t L_out = (L - K) / stride + 1;
+    
+    OpParams params{.stride = stride};
+    return add_node(OpType::CONV1D, {input, weight, bias}, {N, C_out, L_out}, params);
 }
 
 size_t CactusGraph::concat(size_t input1, size_t input2, int axis) {
@@ -484,6 +556,19 @@ size_t CactusGraph::gelu_erf(size_t input) {
     return add_node(OpType::GELU_ERF, {input}, {});
 }
 
+size_t CactusGraph::tanh(size_t input) {
+    return add_node(OpType::TANH, {input}, {});
+}
+
+size_t CactusGraph::rope_gptj(size_t input, float theta, size_t position_offset, size_t rot_dim, ComputeBackend backend) {
+    OpParams params;
+    params.theta = theta;
+    params.position_offset = position_offset;
+    params.scalar = static_cast<float>(rot_dim);
+    params.backend = backend;
+    return add_node(OpType::ROPE_GPTJ, {input}, {}, params);
+}
+
 size_t CactusGraph::gather(size_t tensor, size_t indices) {
     const auto& tensor_buffer = get_output_buffer(tensor);
     const auto& idx_shape = get_output_buffer(indices).shape;
@@ -533,6 +618,10 @@ size_t CactusGraph::embedding(size_t embedding_tensor, size_t indices) {
     const auto& idx_shape = get_output_buffer(indices).shape;
 
     if (emb_buffer.shape.size() != 2) {
+        std::cerr << "Error: Embedding tensor " << embedding_tensor << " has invalid shape: [";
+        for(auto d : emb_buffer.shape) std::cerr << d << ",";
+        std::cerr << "]. OpType=" << (int)nodes_[node_index_map_[embedding_tensor]]->op_type
+                  << " ExtData=" << emb_buffer.external_data << std::endl;
         throw std::runtime_error("Embedding tensor must be 2D [vocab_size, hidden_dim]");
     }
 
@@ -604,4 +693,21 @@ size_t CactusGraph::add_node(OpType op_type, const std::vector<size_t>& inputs, 
 
 const BufferDesc& CactusGraph::get_output_buffer(size_t node_id) const {
     return nodes_[node_index_map_.at(node_id)]->output_buffer;
+}
+
+size_t CactusGraph::persistent(size_t source_node) {
+    const auto& source_buffer = get_output_buffer(source_node);
+    OpParams params;
+    params.output_precision = source_buffer.precision;
+    size_t node_id = add_node(OpType::PERSISTENT, {source_node}, source_buffer.shape, params);
+    persistent_node_ids_.insert(node_id);
+    return node_id;
+}
+
+bool CactusGraph::is_populated(size_t persistent_node_id) const {
+    return populated_node_ids_.count(persistent_node_id) > 0;
+}
+
+void CactusGraph::invalidate_persistent(size_t persistent_node_id) {
+    populated_node_ids_.erase(persistent_node_id);
 }

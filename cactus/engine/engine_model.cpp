@@ -128,7 +128,7 @@ bool Model::init_internal(CactusGraph* gb, const std::string& model_folder, size
         attention_scale_ = 1.0f / std::sqrt(static_cast<float>(config_.attention_head_dim));
     }
 
-    Precision cache_precision = (config_.model_type == Config::ModelType::WHISPER)
+    Precision cache_precision = (config_.model_type == Config::ModelType::WHISPER || config_.model_type == Config::ModelType::MOONSHINE)
                                ? Precision::FP16
                                : Precision::INT8;
     kv_cache_.init(config_.num_layers, context_size, config_.attention_kv_heads, config_.attention_head_dim, cache_precision);
@@ -151,7 +151,7 @@ bool Model::init_internal(CactusGraph* gb, const std::string& model_folder, size
 
     initialized_ = true;
 
-    if (do_warmup && config_.model_type != Config::ModelType::WHISPER) {
+    if (do_warmup && config_.model_type != Config::ModelType::WHISPER && config_.model_type != Config::ModelType::MOONSHINE) {
         std::string warmup_text = system_prompt.empty() ? "Hello" : system_prompt;
         auto warmup_tokens = tokenizer_->encode(warmup_text);
         forward(warmup_tokens);
@@ -224,7 +224,6 @@ uint32_t Model::decode(const std::vector<uint32_t>& tokens, float temperature, f
     if (top_k == 0) {
         top_k = config_.default_top_k;
     }
-
     auto final_hidden = forward(tokens, true);
 
     auto* gb = static_cast<CactusGraph*>(graph_handle_);
@@ -466,6 +465,7 @@ bool Config::from_json(const std::string& config_path) {
             else if (value == "smol" || value == "SMOL" || value == "Smol") model_type = ModelType::SMOL;
             else if (value == "bert" || value == "BERT") model_type = ModelType::NOMIC;
             else if (value == "whisper" || value == "WHISPER") model_type = ModelType::WHISPER;
+            else if (value == "moonshine" || value == "MOONSHINE") model_type = ModelType::MOONSHINE;
             else model_type = ModelType::QWEN;
         }
         else if (key == "model_variant") {
@@ -497,6 +497,11 @@ bool Config::from_json(const std::string& config_path) {
                 }
             }
         }
+        else if (key == "enc_hidden_act") encoder_act_gelu = (value == "gelu");
+        else if (key == "dec_hidden_act") decoder_act_gelu = (value == "gelu");
+        else if (key == "num_encoder_layers") num_encoder_layers = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "num_decoder_layers") num_decoder_layers = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "partial_rotary_factor") partial_rotary_factor = std::stof(value);
     }
 
     if (model_type == ModelType::GEMMA) {
@@ -523,6 +528,11 @@ bool Config::from_json(const std::string& config_path) {
         default_temperature = 0.0f;
         default_top_p = 0.0f;
         default_top_k = 0;
+    } else if (model_type == ModelType::MOONSHINE) {
+        default_temperature = 0.0f;
+        default_top_p = 0.0f;
+        default_top_k = 0;
+        default_max_tps = 6.5f;
     }
 
     return true;
@@ -566,6 +576,8 @@ std::unique_ptr<Model> create_model(const std::string& model_folder) {
             return std::make_unique<NomicModel>(config);
         case Config::ModelType::WHISPER:
             return std::make_unique<WhisperModel>(config);
+        case Config::ModelType::MOONSHINE:
+            return std::make_unique<MoonshineModel>(config);
         default:
             return std::make_unique<QwenModel>(config);
     }

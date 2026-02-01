@@ -5,13 +5,27 @@
 #include <thread>
 #include <chrono>
 #include <dirent.h>
+#include <algorithm>
+#include <cctype>
 
 using namespace EngineTestUtils;
 
 const char* g_model_path = std::getenv("CACTUS_TEST_MODEL");
 const char* g_transcribe_model_path = std::getenv("CACTUS_TEST_TRANSCRIBE_MODEL");
 const char* g_assets_path = std::getenv("CACTUS_TEST_ASSETS");
-const char* g_whisper_prompt = "<|startoftranscript|><|en|><|transcribe|><|notimestamps|>";
+
+static const char* get_transcribe_prompt() {
+    if (g_transcribe_model_path) {
+        std::string path = g_transcribe_model_path;
+        std::transform(path.begin(), path.end(), path.begin(), [](unsigned char c){ return std::tolower(c); });
+        if (path.find("whisper") != std::string::npos) {
+            return "<|startoftranscript|><|en|><|transcribe|><|notimestamps|>";
+        }
+    }
+    return "";
+}
+
+const char* g_whisper_prompt = get_transcribe_prompt();
 
 const char* g_options = R"({
         "max_tokens": 256,
@@ -673,7 +687,9 @@ static bool test_stream_transcription() {
         return false;
     }
 
-    cactus_stream_transcribe_t stream = cactus_stream_transcribe_init(model);
+    cactus_stream_transcribe_t stream = cactus_stream_transcribe_start(
+        model,  R"({"confirmation_threshold": 1.0, "min_chunk_size": 16000})"
+    );
     if (!stream) {
         std::cerr << "[✗] Failed to initialize stream transcribe\n";
         cactus_destroy(model);
@@ -684,7 +700,7 @@ static bool test_stream_transcription() {
     FILE* wav_file = fopen(audio_path.c_str(), "rb");
     if (!wav_file) {
         std::cerr << "[✗] Failed to open audio file\n";
-        cactus_stream_transcribe_destroy(stream);
+        cactus_stream_transcribe_stop(stream, nullptr, 0);
         cactus_destroy(model);
         return false;
     }
@@ -704,22 +720,18 @@ static bool test_stream_transcription() {
     for (size_t offset = 0; offset < pcm_samples.size(); offset += chunk_size) {
         size_t size = std::min(chunk_size, pcm_samples.size() - offset);
 
-        cactus_stream_transcribe_insert(
-            stream,
-            reinterpret_cast<const uint8_t*>(pcm_samples.data() + offset),
-            size * sizeof(int16_t)
-        );
-
         char response[1 << 15] = {0};
         int result = cactus_stream_transcribe_process(
             stream,
+            reinterpret_cast<const uint8_t*>(pcm_samples.data() + offset),
+            size * sizeof(int16_t),
             response,
-            sizeof(response), R"({"confirmation_threshold": 0.90})"
+            sizeof(response)
         );
 
         if (result < 0) {
             std::cerr << "\n[✗] Processing failed\n";
-            cactus_stream_transcribe_destroy(stream);
+            cactus_stream_transcribe_stop(stream, nullptr, 0);
             cactus_destroy(model);
             return false;
         }
@@ -728,21 +740,22 @@ static bool test_stream_transcription() {
         std::string confirmed = json_string(response_str, "confirmed");
         std::string pending = json_string(response_str, "pending");
 
-        full_transcription += confirmed;
-        if (!confirmed.empty()) std::cout << "├─ confirmed: " << confirmed << "\n";
-        if (!pending.empty()) std::cout << "├─ pending: " << pending << "\n";
+        std::cout << "├─ transcription: " << full_transcription + pending << std::endl;
+
+        if (!confirmed.empty()) {
+            full_transcription += confirmed + " ";
+        }
     }
 
     char final_response[1 << 15] = {0};
-    int final_result = cactus_stream_transcribe_finalize(
+    int stop_result = cactus_stream_transcribe_stop(
         stream,
         final_response,
         sizeof(final_response)
     );
 
-    if (final_result < 0) {
-        std::cerr << "[✗] Finalization failed\n";
-        cactus_stream_transcribe_destroy(stream);
+    if (stop_result < 0) {
+        std::cerr << "[✗] Stop failed\n";
         cactus_destroy(model);
         return false;
     }
@@ -777,7 +790,6 @@ static bool test_stream_transcription() {
               << "  \"words_transcribed\": " << word_count << "\n"
               << "├─ Full transcription: \"" << full_transcription << "\"" << std::endl;
 
-    cactus_stream_transcribe_destroy(stream);
     cactus_destroy(model);
     return true;
 }
@@ -997,11 +1009,6 @@ static bool test_pcm_transcription() {
 }
 
 int main() {
-#ifdef __APPLE__
-    cactus_set_telemetry_token("973e4aaa-5ee4-4947-a128-757bb66be75b");
-    cactus_set_pro_key(""); // email founders@cactuscompute.com
-#endif
-
     TestUtils::TestRunner runner("Engine Tests");
     runner.run_test("1k_context", test_1k_context());
     runner.run_test("streaming", test_streaming());

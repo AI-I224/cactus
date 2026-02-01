@@ -1,54 +1,76 @@
 #include "cactus_ffi.h"
 #include "cactus_utils.h"
-#include <chrono>
 #include <cstring>
+#include <regex>
 
 using namespace cactus::ffi;
 
-static std::string extract_json_string_value(const std::string& json, const std::string& key) {
+double json_number(const std::string& json, const std::string& key) {
     std::string pattern = "\"" + key + "\":";
     size_t pos = json.find(pattern);
-    if (pos == std::string::npos) return "";
+    if (pos == std::string::npos) return 0.0;
+    size_t start = pos + pattern.size();
+    while (start < json.size() && (json[start] == ' ' || json[start] == '\t')) ++start;
+    size_t end = start;
+    while (end < json.size() && std::string(",}] \t\n\r").find(json[end]) == std::string::npos) ++end;
+    try { return std::stod(json.substr(start, end - start)); }
+    catch (...) { return 0.0; }
+}
 
-    size_t colon_pos = json.find(':', pos);
-    if (colon_pos == std::string::npos) return "";
+std::string json_string(const std::string& json, const std::string& key) {
+    std::string pattern = "\"" + key + "\":";
+    size_t pos = json.find(pattern);
+    if (pos == std::string::npos) return {};
+    size_t start = pos + pattern.size();
 
-    size_t start_quote = json.find('"', colon_pos);
-    if (start_quote == std::string::npos) return "";
+    while (start < json.size() && (json[start] == ' ' || json[start] == '\t')) ++start;
+    if (start >= json.size() || json[start] != '"') return {};
+    size_t q1 = start;
+    size_t q2 = json.find('"', q1 + 1);
+    if (q2 == std::string::npos) return {};
+    return json.substr(q1 + 1, q2 - q1 - 1);
+}
 
-    std::string result;
-    size_t i = start_quote + 1;
-    while (i < json.length()) {
-        if (json[i] == '"' && (i == start_quote + 1 || json[i - 1] != '\\')) {
-            break;
-        }
-        if (json[i] == '\\' && i + 1 < json.length()) {
-            char next = json[i + 1];
-            if (next == '"') {
-                result += '"';
-                i += 2;
-            } else if (next == '\\') {
-                result += '\\';
-                i += 2;
-            } else if (next == 'n') {
-                result += '\n';
-                i += 2;
-            } else if (next == 'r') {
-                result += '\r';
-                i += 2;
-            } else if (next == 't') {
-                result += '\t';
-                i += 2;
-            } else {
-                result += json[i];
-                i++;
-            }
-        } else {
-            result += json[i];
-            i++;
+std::string escape_json(const std::string& s) {
+    std::ostringstream o;
+    for (auto c : s) {
+        switch (c) {
+            case '"':  o << "\\\""; break;
+            case '\\': o << "\\\\"; break;
+            case '\n': o << "\\n";  break;
+            case '\r': o << "\\r";  break;
+            default:   o << c;      break;
         }
     }
-    return result;
+    return o.str();
+}
+
+bool json_bool(const std::string& json, const std::string& key) {
+    std::string pattern = "\"" + key + "\":";
+    size_t pos = json.find(pattern);
+    if (pos == std::string::npos) return false;
+    size_t start = pos + pattern.size();
+    while (start < json.size() && (json[start] == ' ' || json[start] == '\t')) ++start;
+    if (start + 4 <= json.size() && json.substr(start, 4) == "true") return true;
+    if (start + 5 <= json.size() && json.substr(start, 5) == "false") return false;
+    return false;
+}
+
+std::string json_array(const std::string& json, const std::string& key) {
+    std::string pattern = "\"" + key + "\":";
+    size_t pos = json.find(pattern);
+    if (pos == std::string::npos) return "[]";
+    size_t start = pos + pattern.size();
+    while (start < json.size() && (json[start] == ' ' || json[start] == '\t')) ++start;
+    if (start >= json.size() || json[start] != '[') return "[]";
+    int depth = 1;
+    size_t end = start + 1;
+    while (end < json.size() && depth > 0) {
+        if (json[end] == '[') depth++;
+        else if (json[end] == ']') depth--;
+        end++;
+    }
+    return json.substr(start, end - start);
 }
 
 static bool fuzzy_match(const std::string& a, const std::string& b, size_t n, double threshold) {
@@ -84,30 +106,19 @@ static bool fuzzy_match(const std::string& a, const std::string& b, size_t n, do
     return 1.0 - static_cast<double>(dp[n]) / static_cast<double>(n) >= threshold;
 }
 
-static std::string get_last_n_words(const std::string& text, size_t n) {
-    if (text.empty() || n == 0) return "";
+static std::string suppress_unwanted_text(const std::string& text) {
+    static const std::regex pattern(R"(\([^)]*\)|\[[^\]]*\]|\.\.\.)");
+    std::string result = std::regex_replace(text, pattern, "");
 
-    size_t word_count = 0;
-    bool in_word = false;
-
-    for (size_t i = text.length(); i-- > 0; ) {
-        bool is_space = std::isspace(text[i]);
-        if (is_space && in_word) {
-            ++word_count;
-            in_word = false;
-            if (word_count == n) {
-                return text.substr(i + 1);
-            }
-        } else if (!is_space) {
-            in_word = true;
-        }
-    }
-
-    return text;
+    size_t start = result.find_first_not_of(" \t\n\r");
+    if (start == std::string::npos) return "";
+    size_t end = result.find_last_not_of(" \t\n\r");
+    return result.substr(start, end - start + 1);
 }
 
-static void parse_stream_transcribe_process_options(const std::string& json, double& confirmation_threshold) {
-    confirmation_threshold = 0.95;
+static void parse_stream_transcribe_init_options(const std::string& json, double& confirmation_threshold, size_t& min_chunk_size) {
+    confirmation_threshold = 0.99;
+    min_chunk_size = 32000;
 
     if (json.empty()) {
         return;
@@ -118,17 +129,24 @@ static void parse_stream_transcribe_process_options(const std::string& json, dou
         pos = json.find(':', pos) + 1;
         confirmation_threshold = std::stod(json.substr(pos));
     }
+
+    pos = json.find("\"min_chunk_size\"");
+    if (pos != std::string::npos) {
+        pos = json.find(':', pos) + 1;
+        min_chunk_size = static_cast<size_t>(std::stod(json.substr(pos)));
+    }
 }
 
 struct CactusStreamTranscribeHandle {
     CactusModelHandle* model_handle;
 
-    std::string confirmed;
-    std::string pending;
+    struct CactusStreamTranscribeOptions {
+        double confirmation_threshold;
+        size_t min_chunk_size;
+    } options;
 
     std::vector<uint8_t> audio_buffer;
 
-    std::string last_n_words;
     std::string previous_transcription;
     size_t previous_audio_buffer_size;
 
@@ -137,10 +155,10 @@ struct CactusStreamTranscribeHandle {
 
 extern "C" {
 
-cactus_stream_transcribe_t cactus_stream_transcribe_init(cactus_model_t model) {
+cactus_stream_transcribe_t cactus_stream_transcribe_start(cactus_model_t model, const char* options_json) {
     if (!model) {
         last_error_message = "Model not initialized. Check model path and files.";
-        CACTUS_LOG_ERROR("stream_transcribe_init", last_error_message);
+        CACTUS_LOG_ERROR("stream_transcribe_start", last_error_message);
         return nullptr;
     }
 
@@ -148,7 +166,7 @@ cactus_stream_transcribe_t cactus_stream_transcribe_init(cactus_model_t model) {
         auto* model_handle = static_cast<CactusModelHandle*>(model);
         if (!model_handle->model) {
             last_error_message = "Invalid model handle.";
-            CACTUS_LOG_ERROR("stream_transcribe_init", last_error_message);
+            CACTUS_LOG_ERROR("stream_transcribe_start", last_error_message);
             return nullptr;
         }
 
@@ -157,66 +175,46 @@ cactus_stream_transcribe_t cactus_stream_transcribe_init(cactus_model_t model) {
         stream_handle->previous_audio_buffer_size = 0;
         stream_handle->transcribe_response_buffer[0] = '\0';
 
-        CACTUS_LOG_INFO("stream_transcribe_init",
+        double confirmation_threshold;
+        size_t min_chunk_size;
+        parse_stream_transcribe_init_options(
+            options_json ? options_json : "",
+            confirmation_threshold,
+            min_chunk_size
+        );
+
+        stream_handle->options = { confirmation_threshold, min_chunk_size };
+
+        CACTUS_LOG_INFO("stream_transcribe_start",
             "Stream transcription initialized for model: " << model_handle->model_name);
 
         return stream_handle;
     } catch (const std::exception& e) {
-        last_error_message = "Exception during stream_transcribe_init: " + std::string(e.what());
-        CACTUS_LOG_ERROR("stream_transcribe_init", last_error_message);
+        last_error_message = "Exception during stream_transcribe_start: " + std::string(e.what());
+        CACTUS_LOG_ERROR("stream_transcribe_start", last_error_message);
         return nullptr;
     } catch (...) {
         last_error_message = "Unknown exception during stream transcription initialization";
-        CACTUS_LOG_ERROR("stream_transcribe_init", last_error_message);
+        CACTUS_LOG_ERROR("stream_transcribe_start", last_error_message);
         return nullptr;
-    }
-}
-
-int cactus_stream_transcribe_insert(
-    cactus_stream_transcribe_t stream,
-    const uint8_t* pcm_buffer,
-    size_t pcm_buffer_size
-) {
-    if (!stream) {
-        last_error_message = "Stream not initialized.";
-        CACTUS_LOG_ERROR("stream_transcribe_insert", last_error_message);
-        return -1;
-    }
-
-    if (!pcm_buffer || pcm_buffer_size == 0) {
-        last_error_message = "Invalid parameters: pcm_buffer or pcm_buffer_size";
-        CACTUS_LOG_ERROR("stream_transcribe_insert", last_error_message);
-        return -1;
-    }
-
-    try {
-        auto* handle = static_cast<CactusStreamTranscribeHandle*>(stream);
-        handle->audio_buffer.insert(handle->audio_buffer.end(), pcm_buffer,
-                                    pcm_buffer + pcm_buffer_size);
-
-        CACTUS_LOG_DEBUG("stream_transcribe_insert",
-            "Inserted " << pcm_buffer_size << " bytes, buffer size: " << handle->audio_buffer.size());
-
-        return 0;
-    } catch (const std::exception& e) {
-        last_error_message = "Exception during stream_transcribe_insert: " + std::string(e.what());
-        CACTUS_LOG_ERROR("stream_transcribe_insert", last_error_message);
-        return -1;
-    } catch (...) {
-        last_error_message = "Unknown exception during audio buffer insertion";
-        CACTUS_LOG_ERROR("stream_transcribe_insert", last_error_message);
-        return -1;
     }
 }
 
 int cactus_stream_transcribe_process(
     cactus_stream_transcribe_t stream,
+    const uint8_t* pcm_buffer,
+    size_t pcm_buffer_size,
     char* response_buffer,
-    size_t buffer_size,
-    const char* options_json
+    size_t buffer_size
 ) {
     if (!stream) {
         last_error_message = "Stream not initialized.";
+        CACTUS_LOG_ERROR("stream_transcribe_process", last_error_message);
+        return -1;
+    }
+
+    if (!pcm_buffer || pcm_buffer_size == 0) {
+        last_error_message = "Invalid parameters: pcm_buffer or pcm_buffer_size";
         CACTUS_LOG_ERROR("stream_transcribe_process", last_error_message);
         return -1;
     }
@@ -230,20 +228,34 @@ int cactus_stream_transcribe_process(
     try {
         auto* handle = static_cast<CactusStreamTranscribeHandle*>(stream);
 
-        double confirmation_threshold;
-        parse_stream_transcribe_process_options(
-            options_json ? options_json : "",
-            confirmation_threshold
+        handle->audio_buffer.insert(
+            handle->audio_buffer.end(),
+            pcm_buffer,
+            pcm_buffer + pcm_buffer_size
         );
+        CACTUS_LOG_DEBUG("stream_transcribe_process",
+            "Inserted " << pcm_buffer_size << " bytes, buffer size: " << handle->audio_buffer.size());
 
-        std::string prompt = "<|startofprev|>"
-            + handle->last_n_words
-            + "<|startoftranscript|><|en|><|transcribe|><|notimestamps|>";
+        if (handle->audio_buffer.size() < handle->options.min_chunk_size * sizeof(int16_t)) {
+            std::string json_response = "{\"success\":true,\"confirmed\":\"\",\"pending\":\"\"}";
+
+            if (json_response.length() >= buffer_size) {
+                last_error_message = "Response buffer too small";
+                CACTUS_LOG_ERROR("stream_transcribe_process", last_error_message);
+                handle_error_response(last_error_message, response_buffer, buffer_size);
+                return -1;
+            }
+
+            std::strcpy(response_buffer, json_response.c_str());
+            return static_cast<int>(json_response.length());
+        }
+
+        bool is_moonshine = handle->model_handle->model->get_config().model_type == cactus::engine::Config::ModelType::MOONSHINE;
 
         const int result = cactus_transcribe(
             handle->model_handle,
             nullptr,
-            prompt.c_str(),
+            is_moonshine ? "" : "<|startoftranscript|><|en|><|transcribe|><|notimestamps|>",
             handle->transcribe_response_buffer,
             sizeof(handle->transcribe_response_buffer),
             nullptr,
@@ -262,10 +274,56 @@ int cactus_stream_transcribe_process(
         }
 
         std::string json_str(handle->transcribe_response_buffer);
-        std::string response = extract_json_string_value(json_str, "response");
-        std::string json_response = "{\"success\":true,\"confirmed\":\"" +
-            escape_json_string(handle->confirmed) + "\",\"pending\":\"" +
-            escape_json_string(response) + "\"}";
+        std::string response = suppress_unwanted_text(json_string(json_str, "response"));
+
+        std::string confirmed;
+        const size_t n = std::min(handle->previous_transcription.size(), response.size());
+        if (fuzzy_match(handle->previous_transcription, response, n, handle->options.confirmation_threshold)) {
+            handle->audio_buffer.erase(
+                handle->audio_buffer.begin(),
+                handle->audio_buffer.begin() + handle->previous_audio_buffer_size
+            );
+            confirmed = suppress_unwanted_text(handle->previous_transcription);
+            handle->previous_transcription.clear();
+            handle->previous_audio_buffer_size = 0;
+        } else {
+            handle->previous_transcription = response;
+            handle->previous_audio_buffer_size = handle->audio_buffer.size();
+        }
+
+        std::string error = json_string(json_str, "error");
+        bool cloud_handoff = json_bool(json_str, "cloud_handoff");
+        std::string function_calls = json_array(json_str, "function_calls");
+        double confidence = json_number(json_str, "confidence");
+        double time_to_first_token_ms = json_number(json_str, "time_to_first_token_ms");
+        double total_time_ms = json_number(json_str, "total_time_ms");
+        double prefill_tps = json_number(json_str, "prefill_tps");
+        double decode_tps = json_number(json_str, "decode_tps");
+        double ram_usage_mb = json_number(json_str, "ram_usage_mb");
+        double prefill_tokens = json_number(json_str, "prefill_tokens");
+        double decode_tokens = json_number(json_str, "decode_tokens");
+        double total_tokens = json_number(json_str, "total_tokens");
+
+        std::ostringstream json_builder;
+        json_builder << "{";
+        json_builder << "\"success\":true,";
+        json_builder << "\"error\":" << (error.empty() ? "null" : "\"" + escape_json(error) + "\"") << ",";
+        json_builder << "\"cloud_handoff\":" << (cloud_handoff ? "true" : "false") << ",";
+        json_builder << "\"confirmed\":\"" << escape_json(confirmed) << "\",";
+        json_builder << "\"pending\":\"" << escape_json(response) << "\",";
+        json_builder << "\"function_calls\":" << function_calls << ",";
+        json_builder << "\"confidence\":" << confidence << ",";
+        json_builder << "\"time_to_first_token_ms\":" << time_to_first_token_ms << ",";
+        json_builder << "\"total_time_ms\":" << total_time_ms << ",";
+        json_builder << "\"prefill_tps\":" << prefill_tps << ",";
+        json_builder << "\"decode_tps\":" << decode_tps << ",";
+        json_builder << "\"ram_usage_mb\":" << ram_usage_mb << ",";
+        json_builder << "\"prefill_tokens\":" << prefill_tokens << ",";
+        json_builder << "\"decode_tokens\":" << decode_tokens << ",";
+        json_builder << "\"total_tokens\":" << total_tokens;
+        json_builder << "}";
+
+        std::string json_response = json_builder.str();
 
         if (json_response.length() >= buffer_size) {
             last_error_message = "Response buffer too small";
@@ -275,23 +333,6 @@ int cactus_stream_transcribe_process(
         }
 
         std::strcpy(response_buffer, json_response.c_str());
-
-        const size_t n = std::min(handle->previous_transcription.size(), response.size());
-        if (fuzzy_match(handle->previous_transcription, response, n, confirmation_threshold)) {
-            handle->audio_buffer.erase(
-                handle->audio_buffer.begin(),
-                handle->audio_buffer.begin() + handle->previous_audio_buffer_size
-            );
-            handle->last_n_words = get_last_n_words(handle->last_n_words + handle->previous_transcription, 200);
-            handle->confirmed = std::move(handle->previous_transcription);
-            handle->previous_transcription.clear();
-            handle->previous_audio_buffer_size = 0;
-        } else {
-            handle->confirmed.clear();
-            handle->previous_transcription = std::move(response);
-            handle->previous_audio_buffer_size = handle->audio_buffer.size();
-        }
-
         return static_cast<int>(json_response.length());
     } catch (const std::exception& e) {
         last_error_message = "Exception during stream_transcribe_process: " + std::string(e.what());
@@ -306,54 +347,54 @@ int cactus_stream_transcribe_process(
     }
 }
 
-int cactus_stream_transcribe_finalize(
+int cactus_stream_transcribe_stop(
     cactus_stream_transcribe_t stream,
     char* response_buffer,
     size_t buffer_size
 ) {
     if (!stream) {
         last_error_message = "Stream not initialized.";
-        CACTUS_LOG_ERROR("stream_transcribe_finalize", last_error_message);
+        CACTUS_LOG_ERROR("stream_transcribe_stop", last_error_message);
         return -1;
     }
 
+    auto* handle = static_cast<CactusStreamTranscribeHandle*>(stream);
+
     if (!response_buffer || buffer_size == 0) {
-        last_error_message = "Invalid parameters: response_buffer or buffer_size";
-        CACTUS_LOG_ERROR("stream_transcribe_finalize", last_error_message);
-        return -1;
+        delete handle;
+        return 0;
     }
 
     try {
-        auto* handle = static_cast<CactusStreamTranscribeHandle*>(stream);
+        std::string suppressed = suppress_unwanted_text(handle->previous_transcription);
 
         std::string json_response = "{\"success\":true,\"confirmed\":\"" +
-            escape_json_string(handle->confirmed + handle->previous_transcription) + "\"}";
+            escape_json(suppressed) + "\"}";
 
         if (json_response.length() >= buffer_size) {
             last_error_message = "Response buffer too small";
-            CACTUS_LOG_ERROR("stream_transcribe_finalize", last_error_message);
+            CACTUS_LOG_ERROR("stream_transcribe_stop", last_error_message);
             handle_error_response(last_error_message, response_buffer, buffer_size);
+            delete handle;
             return -1;
         }
 
         std::strcpy(response_buffer, json_response.c_str());
-
+        delete handle;
         return static_cast<int>(json_response.length());
     } catch (const std::exception& e) {
-        last_error_message = "Exception during stream_transcribe_finalize: " + std::string(e.what());
-        CACTUS_LOG_ERROR("stream_transcribe_finalize", last_error_message);
+        last_error_message = "Exception during stream_transcribe_stop: " + std::string(e.what());
+        CACTUS_LOG_ERROR("stream_transcribe_stop", last_error_message);
         handle_error_response(e.what(), response_buffer, buffer_size);
+        delete handle;
         return -1;
     } catch (...) {
-        last_error_message = "Unknown exception during stream transcription finalization";
-        CACTUS_LOG_ERROR("stream_transcribe_finalize", last_error_message);
-        handle_error_response("Unknown error during stream finalization", response_buffer, buffer_size);
+        last_error_message = "Unknown exception during stream transcription stop";
+        CACTUS_LOG_ERROR("stream_transcribe_stop", last_error_message);
+        handle_error_response("Unknown error during stream stop", response_buffer, buffer_size);
+        delete handle;
         return -1;
     }
-}
-
-void cactus_stream_transcribe_destroy(cactus_stream_transcribe_t stream) {
-    if (stream) delete static_cast<CactusStreamTranscribeHandle*>(stream);
 }
 
 }

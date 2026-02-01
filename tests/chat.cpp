@@ -103,7 +103,7 @@ struct TokenPrinter {
 
 TokenPrinter* g_printer = nullptr;
 
-void print_token(const char* token, uint32_t token_id, void* user_data) {
+void print_token(const char* token, uint32_t /*token_id*/, void* /*user_data*/) {
     if (g_printer) {
         g_printer->print(token);
     }

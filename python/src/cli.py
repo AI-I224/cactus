@@ -154,6 +154,12 @@ def cmd_download(args):
             except Exception as e:
                 print(f"  Warning: convert_processors failed: {e}")
 
+        elif 'moonshine' in model_id.lower():
+            from transformers import MoonshineForConditionalGeneration
+            print(f"  Note: Loading Moonshine model using MoonshineForConditionalGeneration...")
+            model = MoonshineForConditionalGeneration.from_pretrained(model_id, cache_dir=cache_dir, trust_remote_code=True, token=token)
+            tokenizer = AutoTokenizer.from_pretrained(model_id, cache_dir=cache_dir, trust_remote_code=True, token=token)
+
         elif is_whisper:
             tokenizer = AutoTokenizer.from_pretrained(model_id, cache_dir=cache_dir, trust_remote_code=True, token=token)
             model = AutoModel.from_pretrained(model_id, cache_dir=cache_dir, trust_remote_code=True, token=token)
@@ -312,6 +318,83 @@ def cmd_build(args):
         return 1
 
     print_color(GREEN, f"Build complete: {build_dir / 'chat'}")
+
+    asr_cpp = tests_dir / "asr.cpp"
+    if asr_cpp.exists():
+        print("Compiling asr.cpp...")
+
+        # Check for SDL2 and get flags
+        sdl2_available = False
+        sdl2_include = ""
+        sdl2_lib = ""
+
+        if is_darwin:
+            sdl2_check = subprocess.run(["brew", "list", "sdl2"], capture_output=True)
+            if sdl2_check.returncode == 0:
+                sdl2_prefix_result = subprocess.run(["brew", "--prefix", "sdl2"], capture_output=True, text=True)
+                if sdl2_prefix_result.returncode == 0:
+                    sdl2_prefix = sdl2_prefix_result.stdout.strip()
+                    sdl2_include = f"-I{sdl2_prefix}/include"
+                    sdl2_lib = f"-L{sdl2_prefix}/lib -lSDL2"
+                    sdl2_available = True
+        else:
+            sdl2_check = subprocess.run(["pkg-config", "--exists", "sdl2"], capture_output=True)
+            if sdl2_check.returncode == 0:
+                cflags = subprocess.run(["pkg-config", "--cflags", "sdl2"], capture_output=True, text=True)
+                libs = subprocess.run(["pkg-config", "--libs", "sdl2"], capture_output=True, text=True)
+                if cflags.returncode == 0 and libs.returncode == 0:
+                    sdl2_include = cflags.stdout.strip()
+                    sdl2_lib = libs.stdout.strip()
+                    sdl2_available = True
+
+        if sdl2_available:
+            print_color(GREEN, "SDL2 found - building with live transcription support")
+        else:
+            print_color(YELLOW, "SDL2 not found - live transcription will be disabled")
+            print_color(YELLOW, "Install SDL2 for live mic support: brew install sdl2 (macOS)")
+
+        if is_darwin:
+            cmd = [
+                compiler, "-std=c++20", "-O3",
+                f"-I{PROJECT_ROOT}",
+            ]
+            if sdl2_available:
+                cmd.extend(["-DHAVE_SDL2", sdl2_include])
+            cmd.extend([
+                str(asr_cpp),
+                str(lib_path),
+                "-o", "asr",
+                "-lcurl",
+                "-framework", "Accelerate",
+                "-framework", "CoreML",
+                "-framework", "Foundation"
+            ])
+            if sdl2_available:
+                cmd.extend(sdl2_lib.split())
+        else:
+            cmd = [
+                compiler, "-std=c++20", "-O3",
+                f"-I{PROJECT_ROOT}",
+            ]
+            if sdl2_available:
+                cmd.extend(["-DHAVE_SDL2", sdl2_include])
+            cmd.extend([
+                str(asr_cpp),
+                str(lib_path),
+                "-o", "asr",
+                "-lcurl",
+                "-pthread"
+            ])
+            if sdl2_available:
+                cmd.extend(sdl2_lib.split())
+
+        result = subprocess.run(cmd, cwd=build_dir)
+        if result.returncode != 0:
+            print_color(RED, "ASR build failed")
+            return 1
+
+        print_color(GREEN, f"Build complete: {build_dir / 'asr'}")
+
     return 0
 
 
@@ -419,13 +502,13 @@ def cmd_build_python(args):
 
 
 def cmd_run(args):
-    """Build, download model if needed, and start interactive chat."""
+    """Download model if needed and start interactive chat."""
     model_id = args.model_id
 
-    if not getattr(args, 'no_build', False):
-        build_result = cmd_build(args)
-        if build_result != 0:
-            return build_result
+    lib_path = PROJECT_ROOT / "cactus" / "build" / "libcactus.a"
+    if not lib_path.exists():
+        print_color(RED, "Error: Cactus library not built. Run 'cactus build' first.")
+        return 1
 
     local_path = Path(model_id)
     if local_path.exists() and (local_path / "config.txt").exists():
@@ -450,6 +533,46 @@ def cmd_run(args):
     os.execv(str(chat_binary), [str(chat_binary), str(weights_dir)])
 
 
+DEFAULT_ASR_MODEL_ID = "openai/whisper-small"
+
+
+def cmd_transcribe(args):
+    """Download ASR model if needed and start transcription."""
+    model_id = getattr(args, 'model_id', DEFAULT_ASR_MODEL_ID)
+    audio_file = getattr(args, 'audio_file', None)
+
+    audio_extensions = ('.wav', '.mp3', '.flac', '.ogg', '.m4a', '.aac')
+    if model_id and model_id.lower().endswith(audio_extensions):
+        audio_file = model_id
+        model_id = DEFAULT_ASR_MODEL_ID
+        args.model_id = model_id
+
+    asr_binary = PROJECT_ROOT / "tests" / "build" / "asr"
+    if not asr_binary.exists():
+        print_color(RED, "Error: ASR binary not built. Run 'cactus build' first.")
+        return 1
+
+    local_path = Path(model_id)
+    if local_path.exists() and (local_path / "config.txt").exists():
+        weights_dir = local_path
+        print_color(GREEN, f"Using local model: {weights_dir}")
+    else:
+        download_result = cmd_download(args)
+        if download_result != 0:
+            return download_result
+        weights_dir = get_weights_dir(model_id)
+
+    os.system('clear' if platform.system() != 'Windows' else 'cls')
+    print_color(GREEN, f"Starting Cactus ASR with model: {model_id}")
+    print()
+
+    cmd_args = [str(asr_binary), str(weights_dir)]
+    if audio_file:
+        cmd_args.append(audio_file)
+
+    os.execv(str(asr_binary), cmd_args)
+
+
 def cmd_eval(args):
     model_id = getattr(args, 'model_id', DEFAULT_MODEL_ID)
 
@@ -457,10 +580,11 @@ def cmd_eval(args):
         print_color(RED, "Skipping internal eval checks: companion repo not found.")
         return 1
 
-    if not getattr(args, 'no_build', False):
-        build_result = cmd_build(args)
-        if build_result != 0:
-            return build_result
+    # Check if cactus library exists
+    lib_path = PROJECT_ROOT / "cactus" / "build" / "libcactus.a"
+    if not lib_path.exists():
+        print_color(RED, "Error: Cactus library not built. Run 'cactus build' first.")
+        return 1
 
     class DownloadArgs:
         pass
@@ -569,6 +693,11 @@ def cmd_test(args):
     print_color(BLUE, "Running test suite...")
     print("=" * 20)
 
+    if getattr(args, 'large', False):
+        args.model = 'LiquidAI/LFM2.5-VL-1.6B'
+        args.transcribe_model = 'openai/whisper-small'
+        print_color(BLUE, f"Using large models: {args.model}, {args.transcribe_model}")
+
     precision = getattr(args, 'precision', None)
     if precision:
         # Regenerate main model weights
@@ -591,7 +720,6 @@ def cmd_test(args):
         if download_result != 0:
             return download_result
 
-        # Regenerate transcribe model weights with same precision
         transcribe_model_id = getattr(args, 'transcribe_model', 'openai/whisper-small')
         transcribe_weights_dir = get_weights_dir(transcribe_model_id)
 
@@ -621,6 +749,8 @@ def cmd_test(args):
         cmd.extend(["--model", args.model])
     if args.transcribe_model:
         cmd.extend(["--transcribe_model", args.transcribe_model])
+    if precision:
+        cmd.extend(["--precision", precision])
     if getattr(args, 'no_rebuild', False):
         cmd.append("--no-rebuild")
     if args.android:
@@ -838,6 +968,22 @@ def create_parser():
     --precision INT4|INT8|FP16   default: INT8
     --token <token>                    HF token (for gated models)
 
+  -----------------------------------------------------------------
+
+  cactus transcribe [model]            live microphone transcription
+                                       default model: whisper-small
+
+    Optional flags:
+    --file <audio.wav>                 transcribe audio file instead of mic
+    --precision INT4|INT8|FP16         default: INT8
+    --token <token>                    HF token (for gated models)
+
+    Examples:
+    cactus transcribe                  live microphone transcription
+    cactus transcribe --file audio.wav transcribe single file
+    cactus transcribe openai/whisper-small   use different model
+    cactus transcribe openai/whisper-small --file audio.wav
+
    -----------------------------------------------------------------
 
   cactus download <model>              downloads model to ./weights
@@ -876,6 +1022,7 @@ def create_parser():
     Optional flags:
     --model <model>                    default: LFM2-VL-450M
     --transcribe_model <model>         default: whisper-small
+    --large                            use larger models (LFM2.5-VL-1.6B + whisper-small)
     --precision INT4|INT8|FP16         regenerates weights with precision
     --no-rebuild                       skip building library and tests
     --ios                              run on connected iPhone
@@ -940,16 +1087,24 @@ def create_parser():
                             help='Quantization precision (default: INT8)')
     run_parser.add_argument('--cache-dir', help='Cache directory for HuggingFace models')
     run_parser.add_argument('--token', help='HuggingFace API token')
-    run_parser.add_argument('--no-build', action='store_true', help='Skip building Cactus before running')
 
-    eval_parser = subparsers.add_parser('eval', help='Run evaluation scripts located outside the cactus submodule')
+    transcribe_parser = subparsers.add_parser('transcribe', help='Download ASR model and run transcription')
+    transcribe_parser.add_argument('model_id', nargs='?', default=DEFAULT_ASR_MODEL_ID,
+                                   help=f'HuggingFace model ID (default: {DEFAULT_ASR_MODEL_ID})')
+    transcribe_parser.add_argument('--file', dest='audio_file', default=None,
+                                   help='Audio file to transcribe (WAV format). Omit for live microphone.')
+    transcribe_parser.add_argument('--precision', choices=['INT4', 'INT8', 'FP16'], default='INT8',
+                                   help='Quantization precision (default: INT8)')
+    transcribe_parser.add_argument('--cache-dir', help='Cache directory for HuggingFace models')
+    transcribe_parser.add_argument('--token', help='HuggingFace API token')
+
+    eval_parser = subparsers.add_parser('eval', help='Run evaluation scripts outside the cactus submodule')
     eval_parser.add_argument('model_id', nargs='?', default=DEFAULT_MODEL_ID,
                              help=f'HuggingFace model ID (default: {DEFAULT_MODEL_ID})')
     eval_parser.add_argument('--precision', choices=['INT4', 'INT8', 'FP16'], default='INT8',
                              help='Quantization precision (default: INT8)')
     eval_parser.add_argument('--cache-dir', help='Cache directory for HuggingFace models')
     eval_parser.add_argument('--token', help='HuggingFace API token')
-    eval_parser.add_argument('--no-build', action='store_true', help='Skip building Cactus before running evals')
     eval_parser.add_argument('--tools', action='store_true', help='Run tools evals (default)')
     eval_parser.add_argument('--vlm', action='store_true', help='Run VLM-specific evals')
     eval_parser.add_argument('--stt', action='store_true', help='Run speech-to-text evals')
@@ -961,6 +1116,8 @@ def create_parser():
                              help='Model to use for tests')
     test_parser.add_argument('--transcribe_model', default='openai/whisper-small',
                              help='Transcribe model to use')
+    test_parser.add_argument('--large', action='store_true',
+                             help='Use larger models (LFM2.5-VL-1.6B + whisper-small)')
     test_parser.add_argument('--precision', choices=['INT4', 'INT8', 'FP16'],
                              help='Regenerate weights with this precision (deletes existing weights)')
     test_parser.add_argument('--no-rebuild', action='store_true',
@@ -1013,6 +1170,8 @@ def main():
         sys.exit(cmd_build(args))
     elif args.command == 'run':
         sys.exit(cmd_run(args))
+    elif args.command == 'transcribe':
+        sys.exit(cmd_transcribe(args))
     elif args.command == 'test':
         sys.exit(cmd_test(args))
     elif args.command == 'eval':

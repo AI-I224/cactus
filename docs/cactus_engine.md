@@ -11,9 +11,11 @@ Before using the Cactus Engine, you need to download model weights:
 cactus download LiquidAI/LFM2-1.2B
 cactus download LiquidAI/LFM2-VL-450M
 cactus download openai/whisper-small
+cactus download UsefulSensors/moonshine-base --precision FP16
 ```
 
 Weights are saved to the `weights/` directory and can be loaded using `cactus_init()`.
+Moonshine requires FP16 precision when downloading and running.
 
 ## Types
 
@@ -333,102 +335,48 @@ An opaque pointer type representing a streaming transcription session. Used for 
 typedef void* cactus_stream_transcribe_t;
 ```
 
-### `cactus_stream_transcribe_init`
-Initializes a new streaming transcription session for a transcription model.
+### `cactus_stream_transcribe_start`
+Initializes a new streaming transcription session with optional configuration.
 
 ```c
-cactus_stream_transcribe_t cactus_stream_transcribe_init(
-    cactus_model_t model        // Model handle (must be Whisper model)
+cactus_stream_transcribe_t cactus_stream_transcribe_start(
+    cactus_model_t model,        // Model handle
+    const char* options_json     // Optional configuration (can be NULL)
 );
 ```
 
 **Returns:** Stream handle on success, NULL on failure
 
+**Options Format:**
+```json
+{
+    "confirmation_threshold": 0.99,
+    "min_chunk_size": 32000
+}
+```
+
+- `confirmation_threshold`: Threshold (0.0-1.0) for confirming transcription segments. Higher values require more stability. Default: 0.99
+- `min_chunk_size`: Minimum audio samples to perform transcription processing step. Default: 32000
+
 **Example:**
 ```c
 cactus_model_t whisper = cactus_init("../../weights/whisper-small", NULL);
 
-cactus_stream_transcribe_t stream = cactus_stream_transcribe_init(whisper);
+cactus_stream_transcribe_t stream = cactus_stream_transcribe_start(whisper, "{\"confirmation_threshold\": 1.0}");
 if (!stream) {
-    fprintf(stderr, "Failed to initialize stream: %s\n", cactus_get_last_error());
+    fprintf(stderr, "Failed to start stream: %s\n", cactus_get_last_error());
     return -1;
 }
 ```
 
-### `cactus_stream_transcribe_insert`
-Inserts audio samples into the streaming transcription buffer. Audio should be 16-bit PCM, 16kHz, mono.
-
-```c
-int cactus_stream_transcribe_insert(
-    cactus_stream_transcribe_t stream,  // Stream handle
-    const uint8_t* pcm_buffer,          // Raw PCM audio data (16-bit, 16kHz, mono)
-    size_t pcm_buffer_size              // Size of PCM buffer in bytes
-);
-```
-
-**Returns:** 0 on success, negative value on error
-
-**Example:**
-```c
-uint8_t audio_chunk[32000]; // 1 second at 16kHz * 2 bytes
-
-int result = cactus_stream_transcribe_insert(stream, audio_chunk, sizeof(audio_chunk));
-if (result < 0) {
-    fprintf(stderr, "Insert failed: %s\n", cactus_get_last_error());
-}
-```
-
 ### `cactus_stream_transcribe_process`
-Processes the accumulated audio buffer and returns confirmed and pending transcription results.
+Processes audio chunk and returns confirmed and pending transcription results.
 
 ```c
 int cactus_stream_transcribe_process(
     cactus_stream_transcribe_t stream,  // Stream handle
-    char* response_buffer,              // Buffer for response JSON
-    size_t buffer_size,                 // Size of response buffer
-    const char* options_json            // Optional processing options (can be NULL)
-);
-```
-
-**Returns:** Number of bytes written to response_buffer on success, negative value on error
-
-**Options Format:**
-```json
-{
-    "confirmation_threshold": 0.95
-}
-```
-
-- `confirmation_threshold`: Threshold (0.0-1.0) for confirming transcription segments. Higher values require more stability before confirmation. Default: 0.95
-
-**Response Format:**
-```json
-{
-    "success": true,
-    "confirmed": "text confirmed from previous call",
-    "pending": "current transcription result"
-}
-```
-
-- `confirmed`: Text that was confirmed from the previous call (append to final transcription)
-- `pending`: Current transcription result (may be confirmed in next call if stable)
-
-**Example:**
-```c
-char response[32768];
-int result = cactus_stream_transcribe_process(stream, response, sizeof(response), "{\"confirmation_threshold\": 0.90}");
-
-if (result > 0) {
-    printf("Response: %s\n", response);
-}
-```
-
-### `cactus_stream_transcribe_finalize`
-Finalizes the streaming session and confirms any remaining transcription.
-
-```c
-int cactus_stream_transcribe_finalize(
-    cactus_stream_transcribe_t stream,  // Stream handle
+    const uint8_t* pcm_buffer,          // Raw PCM audio (16-bit, 16kHz, mono)
+    size_t pcm_buffer_size,             // Size of PCM buffer in bytes
     char* response_buffer,              // Buffer for response JSON
     size_t buffer_size                  // Size of response buffer
 );
@@ -440,31 +388,72 @@ int cactus_stream_transcribe_finalize(
 ```json
 {
     "success": true,
-    "confirmed": "Final confirmed transcription segment"
+    "error": null,
+    "cloud_handoff": false,
+    "confirmed": "text confirmed from previous call",
+    "pending": "current transcription result",
+    "function_calls": [],
+    "confidence": 0.95,
+    "time_to_first_token_ms": 150.5,
+    "total_time_ms": 450.2,
+    "prefill_tps": 100.0,
+    "decode_tps": 50.0,
+    "ram_usage_mb": 512.5,
+    "prefill_tokens": 100,
+    "decode_tokens": 50,
+    "total_tokens": 150
+}
+```
+
+- `confirmed`: Confirmed transcription chunk
+- `pending`: Current transcription result (may be confirmed in next call if stable)
+- `error`: Error message if any, null otherwise
+- `cloud_handoff`: Whether cloud handoff is needed
+- `function_calls`: Array of function calls if any
+- `confidence`, timing, and token metrics: Model performance statistics
+
+**Example:**
+```c
+uint8_t audio_chunk[32000]; // 1 second at 16kHz, 16-bit
+char response[32768];
+
+int result = cactus_stream_transcribe_process(stream, audio_chunk, sizeof(audio_chunk), response, sizeof(response));
+if (result > 0) {
+    printf("Response: %s\n", response);
+}
+```
+
+### `cactus_stream_transcribe_stop`
+Stops the streaming session and returns any remaining confirmed transcription. Releases all resources.
+
+```c
+int cactus_stream_transcribe_stop(
+    cactus_stream_transcribe_t stream,  // Stream handle
+    char* response_buffer,              // Buffer for response JSON (can be NULL)
+    size_t buffer_size                  // Size of response buffer (can be 0)
+);
+```
+
+**Returns:** Number of bytes written on success, 0 if no response buffer provided, negative value on error
+
+**Response Format:**
+```json
+{
+    "success": true,
+    "confirmed": "Final confirmed transcription chunk"
 }
 ```
 
 **Example:**
 ```c
 char final_response[32768];
-int result = cactus_stream_transcribe_finalize(stream, final_response, sizeof(final_response));
+int result = cactus_stream_transcribe_stop(stream, final_response, sizeof(final_response));
 if (result > 0) {
     printf("Final: %s\n", final_response);
 }
-```
 
-### `cactus_stream_transcribe_destroy`
-Releases all resources associated with the streaming transcription session.
-
-```c
-void cactus_stream_transcribe_destroy(
-    cactus_stream_transcribe_t stream   // Stream handle
-);
-```
-
-**Example:**
-```c
-cactus_stream_transcribe_destroy(stream);
+// Or simply cleanup resources without response
+cactus_stream_transcribe_stop(stream, NULL, 0);
 ```
 
 ### `cactus_embed`
@@ -657,35 +646,6 @@ if (!model) {
     fprintf(stderr, "Error: %s\n", error);
 }
 ```
-
-### `cactus_set_telemetry_token`
-Sets the telemetry token for usage tracking. Pass NULL or empty string to disable telemetry.
-
-```c
-void cactus_set_telemetry_token(const char* token);
-```
-
-**Example:**
-```c
-cactus_set_telemetry_token("your-telemetry-token");
-cactus_set_telemetry_token(NULL); // disable
-```
-
-### `cactus_set_pro_key`
-Sets the pro key to enable NPU acceleration on supported devices (Apple Neural Engine).
-
-```c
-void cactus_set_pro_key(const char* pro_key);
-```
-
-**Example:**
-```c
-cactus_set_pro_key("your-pro-key");
-
-cactus_model_t model = cactus_init("path/to/model", NULL);
-```
-
-**Note:** The pro key should be set before initializing any models to ensure NPU acceleration is enabled.
 
 ## Vector Index APIs
 
@@ -1066,6 +1026,7 @@ int find_similar_image(cactus_model_t model, const char* query,
 | Smol | ✓ | - | - | ✓ | SmolLM compact models |
 | Nomic | - | - | - | ✓ | Nomic embedding models |
 | Whisper | - | - | ✓ | ✓ | OpenAI Whisper transcription |
+| Moonshine | - | - | ✓ | ✓ | UsefulSensors Moonshine transcription |
 | Siglip2 | - | ✓ | - | ✓ | Vision encoder for embeddings |
 
 ## Environment Variables

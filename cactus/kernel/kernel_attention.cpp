@@ -7,6 +7,7 @@
 #include <cstring>
 #include <vector>
 
+
 void cactus_attention_f16(
     const __fp16* queries,
     const __fp16* keys,
@@ -47,6 +48,12 @@ void cactus_attention_f16(
             std::vector<float> block_scores(BLOCK_SIZE);
             std::vector<float32x4_t> output_accum_low(head_dim_aligned / VECTOR_WIDTH * 2);
             std::vector<float32x4_t> output_accum_high(head_dim_aligned / VECTOR_WIDTH * 2);
+            
+            const size_t tail_dims = head_dim - head_dim_aligned;
+            std::vector<float> output_accum_tail(tail_dims, 0.0f);
+
+            const float NEG_INF = -std::numeric_limits<float>::infinity();
+            const size_t used_vec_blocks = head_dim_aligned / VECTOR_WIDTH;
 
             for (size_t work_idx = start_idx; work_idx < end_idx; ++work_idx) {
                 const size_t batch_idx = work_idx / (num_q_heads * seq_len);
@@ -71,6 +78,9 @@ void cactus_attention_f16(
                         output_accum_low[i] = vdupq_n_f32(0.0f);
                         output_accum_high[i] = vdupq_n_f32(0.0f);
                     }
+                    for (size_t i = 0; i < tail_dims; ++i) {
+                        output_accum_tail[i] = 0.0f;
+                    }
                     
                     const bool is_decode = (q_pos == seq_len - 1) && seq_len > 1;
                     const size_t absolute_q_pos = position_offset + q_pos;
@@ -90,14 +100,14 @@ void cactus_attention_f16(
                     }
 
                     for (size_t kv_block_start = kv_start; kv_block_start < kv_end; kv_block_start += BLOCK_SIZE) {
-                        const size_t kv_block_end = std::min(kv_block_start + BLOCK_SIZE, kv_seq_len);
+                        const size_t kv_block_end = std::min(kv_block_start + BLOCK_SIZE, kv_end);
                         const size_t block_size = kv_block_end - kv_block_start;
 
                         float block_max = -std::numeric_limits<float>::infinity();
 
                         if (!is_decode && is_causal && kv_block_start > absolute_q_pos) {
                             for (size_t kv_idx = 0; kv_idx < block_size; ++kv_idx) {
-                                block_scores[kv_idx] = -std::numeric_limits<float>::infinity();
+                                block_scores[kv_idx] = NEG_INF;
                             }
                             continue; 
                         }
@@ -106,7 +116,7 @@ void cactus_attention_f16(
                             const size_t kv_pos = kv_block_start + kv_idx;
 
                             if (!is_decode && is_causal && kv_pos > absolute_q_pos) {
-                                block_scores[kv_idx] = -std::numeric_limits<float>::infinity();
+                                block_scores[kv_idx] = NEG_INF;
                                 continue;
                             }
 
@@ -144,28 +154,37 @@ void cactus_attention_f16(
                             size_t absolute_q_pos = position_offset + q_pos;
 
                             if (is_causal && kv_pos > absolute_q_pos) {
-                                score = -std::numeric_limits<float>::infinity();
+                                score = NEG_INF;
                             }
                             else if (window_size > 0 && kv_pos < absolute_q_pos && (absolute_q_pos - kv_pos) > window_size) {
-                                score = -std::numeric_limits<float>::infinity();
+                                score = NEG_INF;
                             }
                             else if (M && static_cast<float>(M[q_pos * kv_seq_len + kv_pos]) == 0.0f) {
-                                score = -std::numeric_limits<float>::infinity();
+                                score = NEG_INF;
                             }
                             
                             block_scores[kv_idx] = score;
                             block_max = std::max(block_max, score);
                         }
                         
-                        if (block_max > -std::numeric_limits<float>::infinity()) {
+                        float current_block_scale = 1.0f;
+
+                        if (block_max > NEG_INF) {
+                            if (block_max > running_max) {
                             float scale_correction = expf(running_max - block_max);
                             running_sum *= scale_correction;
                             
-                            for (size_t i = 0; i < output_accum_low.size() / 2; ++i) {
+                            for (size_t i = 0; i < used_vec_blocks; ++i) {
                                 output_accum_low[i] = vmulq_n_f32(output_accum_low[i], scale_correction);
                                 output_accum_high[i] = vmulq_n_f32(output_accum_high[i], scale_correction);
                             }
+                            for (size_t i = 0; i < tail_dims; ++i) {
+                                output_accum_tail[i] *= scale_correction;
+                            }
                             running_max = block_max;
+                            } else {
+                                current_block_scale = expf(block_max - running_max);
+                            }
                         }
                         
                         float block_sum = 0.0f;
@@ -173,13 +192,13 @@ void cactus_attention_f16(
 
                         for (size_t kv_idx = 0; kv_idx < vec_size; kv_idx += 4) {
                             float32x4_t scores = vld1q_f32(&block_scores[kv_idx]);
-                            uint32x4_t inf_mask = vceqq_f32(scores, vdupq_n_f32(-std::numeric_limits<float>::infinity()));
+                            uint32x4_t inf_mask = vceqq_f32(scores, vdupq_n_f32(NEG_INF));
 
                             float32x4_t x = vsubq_f32(scores, vdupq_n_f32(block_max));
                             x = vmulq_n_f32(x, 1.442695f); 
-
-                            int32x4_t xi = vcvtq_s32_f32(x);
-                            float32x4_t xf = vsubq_f32(x, vcvtq_f32_s32(xi));
+                            float32x4_t x_floor = vrndmq_f32(x);
+                            int32x4_t xi = vcvtq_s32_f32(x_floor);
+                            float32x4_t xf = vsubq_f32(x, x_floor);
 
                             float32x4_t y = vfmaq_n_f32(vdupq_n_f32(1.0f), xf, 0.6931472f);
                             y = vfmaq_f32(y, vmulq_f32(xf, xf), vdupq_n_f32(0.2402265f));
@@ -188,14 +207,16 @@ void cactus_attention_f16(
                             xi = vshlq_n_s32(xi, 23);
                             y = vmulq_f32(y, vreinterpretq_f32_s32(xi));
 
-                            y = vbslq_f32(inf_mask, vdupq_n_f32(0.0f), y);
+                            uint32x4_t underflow_mask = vcltq_f32(x, vdupq_n_f32(-126.0f));
+                            uint32x4_t zero_mask = vorrq_u32(inf_mask, underflow_mask);
+                            y = vbslq_f32(zero_mask, vdupq_n_f32(0.0f), y);
 
                             vst1q_f32(&block_scores[kv_idx], y);
                             block_sum += vaddvq_f32(y);
                         }
 
                         for (size_t kv_idx = vec_size; kv_idx < block_size; ++kv_idx) {
-                            if (block_scores[kv_idx] != -std::numeric_limits<float>::infinity()) {
+                            if (block_scores[kv_idx] != NEG_INF) {
                                 block_scores[kv_idx] = expf(block_scores[kv_idx] - block_max);
                                 block_sum += block_scores[kv_idx];
                             } else {
@@ -204,7 +225,7 @@ void cactus_attention_f16(
                         }
                         
                         for (size_t kv_idx = 0; kv_idx < block_size; ++kv_idx) {
-                            const float attn_weight = block_scores[kv_idx];
+                            const float attn_weight = block_scores[kv_idx] * current_block_scale;
                             if (attn_weight == 0.0f) continue;
                             
                             const size_t kv_pos = kv_block_start + kv_idx;
@@ -221,9 +242,14 @@ void cactus_attention_f16(
                                 output_accum_low[idx] = vfmaq_f32(output_accum_low[idx], v_low, weight_vec);
                                 output_accum_high[idx] = vfmaq_f32(output_accum_high[idx], v_high, weight_vec);
                             }
+                            
+                            for (size_t dim = head_dim_aligned; dim < head_dim; ++dim) {
+                                float val = attn_weight * static_cast<float>(v_vec[dim]);
+                                output_accum_tail[dim - head_dim_aligned] += val;
+                            }
                         }
                         
-                        running_sum += block_sum;
+                        running_sum += block_sum * current_block_scale;
                     }
                     
                     if (running_sum > 0.0f) {
@@ -243,7 +269,7 @@ void cactus_attention_f16(
                         }
                         
                         for (size_t dim = head_dim_aligned; dim < head_dim; ++dim) {
-                            o_vec[dim] = static_cast<__fp16>(0.0f);
+                            o_vec[dim] = static_cast<__fp16>(output_accum_tail[dim - head_dim_aligned] * inv_sum);
                         }
                     } else {
                         for (size_t dim = 0; dim < head_dim; ++dim) {
@@ -253,6 +279,7 @@ void cactus_attention_f16(
             }
         });
 }
+
 
 void cactus_attention_hybrid_int8_fp16(
     const __fp16* queries,    
@@ -686,3 +713,83 @@ void cactus_rope_f16(
             }
         });
 } 
+
+void cactus_gpt_j_rope_f16(
+    const __fp16* input,
+    __fp16* output,
+    size_t batch_size,
+    size_t seq_len,
+    size_t num_heads,
+    size_t head_dim,
+    size_t rot_dim,
+    size_t start_pos,
+    float theta
+) {
+    const size_t half_rot_dim = rot_dim / 2;
+    
+    CactusRoPEF16::precompute_rope_tables_f16(seq_len + start_pos, rot_dim, theta);
+    
+    const __fp16* cos_cache = CactusRoPEF16::rope_cache_f16.cos_table.data() + start_pos * half_rot_dim;
+    const __fp16* sin_cache = CactusRoPEF16::rope_cache_f16.sin_table.data() + start_pos * half_rot_dim;
+
+    CactusThreading::parallel_for(batch_size * seq_len, CactusThreading::Thresholds::SCALAR_EXPENSIVE,
+        [&](size_t start_idx, size_t end_idx) {
+            for (size_t idx = start_idx; idx < end_idx; ++idx) {
+                const size_t batch_idx = idx / seq_len;
+                const size_t seq_idx = idx % seq_len;
+                
+                for (size_t head_idx = 0; head_idx < num_heads; ++head_idx) {
+                    const size_t offset = ((batch_idx * seq_len + seq_idx) * num_heads + head_idx) * head_dim;
+                    const __fp16* input_ptr = input + offset;
+                    __fp16* output_ptr = output + offset;
+                    
+                    const __fp16* cos_ptr = cos_cache + seq_idx * half_rot_dim;
+                    const __fp16* sin_ptr = sin_cache + seq_idx * half_rot_dim;
+                    
+                    constexpr size_t SIMD_WIDTH = 8;
+                    const size_t vectorized_half_rot_dim = (half_rot_dim / SIMD_WIDTH) * SIMD_WIDTH;
+                    
+                    for (size_t i = 0; i < vectorized_half_rot_dim; i += SIMD_WIDTH) {
+                        float16x8_t cos_vec = vld1q_f16(&cos_ptr[i]);
+                        float16x8_t sin_vec = vld1q_f16(&sin_ptr[i]);
+                        
+                        float16x8x2_t x_vec = vld2q_f16(&input_ptr[2*i]);
+                        float16x8_t x_first_half = x_vec.val[0];
+                        float16x8_t x_second_half = x_vec.val[1];
+                        
+                        float16x8_t first_result = vfmsq_f16(vmulq_f16(x_first_half, cos_vec), x_second_half, sin_vec);
+                        float16x8_t second_result = vfmaq_f16(vmulq_f16(x_second_half, cos_vec), x_first_half, sin_vec);
+                        
+                        float16x8x2_t t;
+                        t.val[0] = first_result;
+                        t.val[1] = second_result;
+                        vst2q_f16(&output_ptr[2*i], t);
+                    }
+                    
+                    for (size_t i = vectorized_half_rot_dim; i < half_rot_dim; ++i) {
+                        const __fp16 cos_val = cos_ptr[i];
+                        const __fp16 sin_val = sin_ptr[i];
+                        
+                        const __fp16 x_first_half = input_ptr[2*i];
+                        const __fp16 x_second_half = input_ptr[2*i + 1];
+                        
+                        output_ptr[2*i] = x_first_half * cos_val - x_second_half * sin_val;
+                        
+                        output_ptr[2*i + 1] = x_second_half * cos_val + x_first_half * sin_val;
+                    }
+
+                    constexpr size_t TAIL_SIMD_WIDTH = 8;
+                    size_t copy_idx = rot_dim;
+                    const size_t copy_end_vec = (head_dim / TAIL_SIMD_WIDTH) * TAIL_SIMD_WIDTH;
+
+                    for (; copy_idx + TAIL_SIMD_WIDTH <= copy_end_vec; copy_idx += TAIL_SIMD_WIDTH) {
+                        float16x8_t v = vld1q_f16(&input_ptr[copy_idx]);
+                        vst1q_f16(&output_ptr[copy_idx], v);
+                    }
+                    for (; copy_idx < head_dim; ++copy_idx) {
+                        output_ptr[copy_idx] = input_ptr[copy_idx];
+                    }
+                }
+            }
+        });
+}

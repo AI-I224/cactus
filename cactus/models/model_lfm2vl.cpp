@@ -241,7 +241,7 @@ Lfm2VlModel::MergedEmbeddingResult Lfm2VlModel::merge_image_text_embeddings(
         const size_t segment_len = current_segment.size();
         TextEmbeddingInput segment;
         segment.tokens.swap(current_segment);
-    segment.input_node = gb->input({segment.tokens.size()}, Precision::FP32);
+        segment.input_node = gb->input({segment.tokens.size()}, Precision::FP32);
 
         const auto& embedding_buffer = gb->get_output_buffer(language_model_.embedding_node_id_);
 

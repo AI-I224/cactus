@@ -1,6 +1,5 @@
 #include "cactus_ffi.h"
 #include "cactus_utils.h"
-#include "cactus_telemetry.h"
 #include "../../libs/audio/wav.h"
 #include <chrono>
 #include <cstring>
@@ -56,44 +55,6 @@ static std::vector<float> normalize_mel(std::vector<float>& mel, size_t n_mels) 
         return fixed;
     }
     return mel;
-}
-
-static std::vector<float> compute_whisper_mel_from_pcm(const int16_t* pcm_samples, size_t num_samples, int sample_rate_in) {
-    if (!pcm_samples || num_samples == 0) return {};
-
-    std::vector<float> waveform_fp32(num_samples);
-    for (size_t i = 0; i < num_samples; i++)
-        waveform_fp32[i] = static_cast<float>(pcm_samples[i]) / 32768.0f;
-
-    std::vector<float> waveform_16k = resample_to_16k_fp32(waveform_fp32, sample_rate_in);
-    if (waveform_16k.empty()) return {};
-
-    auto cfg = get_whisper_spectrogram_config();
-    const size_t num_mel_filters = 80;
-    const size_t num_frequency_bins = cfg.n_fft / 2 + 1;
-
-    AudioProcessor ap;
-    ap.init_mel_filters(num_frequency_bins, num_mel_filters, 0.0f, 8000.0f, WHISPER_SAMPLE_RATE);
-    std::vector<float> mel = ap.compute_spectrogram(waveform_16k, cfg);
-
-    if (mel.empty()) return mel;
-    return normalize_mel(mel, num_mel_filters);
-}
-
-static std::vector<float> compute_whisper_mel_from_wav(const std::string& wav_path) {
-    AudioFP32 audio = load_wav(wav_path);
-    std::vector<float> waveform_16k = resample_to_16k_fp32(audio.samples, audio.sample_rate);
-
-    auto cfg = get_whisper_spectrogram_config();
-    const size_t num_mel_filters = 80;
-    const size_t num_frequency_bins = cfg.n_fft / 2 + 1;
-
-    AudioProcessor ap;
-    ap.init_mel_filters(num_frequency_bins, num_mel_filters, 0.0f, 8000.0f, WHISPER_SAMPLE_RATE);
-    std::vector<float> mel = ap.compute_spectrogram(waveform_16k, cfg);
-
-    if (mel.empty()) return mel;
-    return normalize_mel(mel, num_mel_filters);
 }
 
 extern "C" {
@@ -153,22 +114,57 @@ int cactus_transcribe(
         bool force_tools, include_stop_sequences;
         parse_options_json(options_json ? options_json : "", temperature, top_p, top_k, max_tokens, stop_sequences, force_tools, tool_rag_top_k, confidence_threshold, include_stop_sequences);
 
-        std::vector<float> mel_bins;
+        std::vector<float> audio_features;
+        
+        bool is_moonshine = handle->model->get_config().model_type == cactus::engine::Config::ModelType::MOONSHINE;
+
         if (audio_file_path == nullptr) {
             const int16_t* pcm_samples = reinterpret_cast<const int16_t*>(pcm_buffer);
             size_t num_samples = pcm_buffer_size / 2;
-            mel_bins = compute_whisper_mel_from_pcm(pcm_samples, num_samples, WHISPER_SAMPLE_RATE);
+            
+            std::vector<float> waveform_fp32(num_samples);
+            for (size_t i = 0; i < num_samples; i++)
+                waveform_fp32[i] = static_cast<float>(pcm_samples[i]) / 32768.0f;
+
+            std::vector<float> waveform_16k = resample_to_16k_fp32(waveform_fp32, WHISPER_SAMPLE_RATE); 
+            
+            if (is_moonshine) {
+                 size_t silence_samples = 4800; // 300ms * 16000
+                 waveform_16k.insert(waveform_16k.end(), silence_samples, 0.0f);
+                 audio_features = waveform_16k;
+            } else {
+                 if (!waveform_16k.empty()) {
+                     auto cfg = get_whisper_spectrogram_config();
+                     AudioProcessor ap;
+                     ap.init_mel_filters(cfg.n_fft / 2 + 1, 80, 0.0f, 8000.0f, WHISPER_SAMPLE_RATE);
+                     std::vector<float> mel = ap.compute_spectrogram(waveform_16k, cfg);
+                     audio_features = normalize_mel(mel, 80);
+                 }
+            }
         } else {
-            mel_bins = compute_whisper_mel_from_wav(audio_file_path);
+             AudioFP32 audio = load_wav(audio_file_path);
+             std::vector<float> waveform_16k = resample_to_16k_fp32(audio.samples, audio.sample_rate);
+             
+             if (is_moonshine) {
+                 size_t silence_samples = 4800; // 300ms * 16000
+                 waveform_16k.insert(waveform_16k.end(), silence_samples, 0.0f);
+                 audio_features = waveform_16k;
+             } else {
+                  auto cfg = get_whisper_spectrogram_config();
+                  AudioProcessor ap;
+                  ap.init_mel_filters(cfg.n_fft / 2 + 1, 80, 0.0f, 8000.0f, WHISPER_SAMPLE_RATE);
+                  std::vector<float> mel = ap.compute_spectrogram(waveform_16k, cfg);
+                  audio_features = normalize_mel(mel, 80);
+             }
         }
 
-        if (mel_bins.empty()) {
-            CACTUS_LOG_ERROR("transcribe", "Computed mel spectrogram is empty");
-            handle_error_response("Computed mel spectrogram is empty", response_buffer, buffer_size);
+        if (audio_features.empty()) {
+            CACTUS_LOG_ERROR("transcribe", "Computed audio features are empty");
+            handle_error_response("Computed audio features are empty", response_buffer, buffer_size);
             return -1;
         }
 
-        CACTUS_LOG_DEBUG("transcribe", "Mel spectrogram computed, size: " << mel_bins.size());
+        CACTUS_LOG_DEBUG("transcribe", "Audio features prepared, size: " << audio_features.size());
 
         auto* tokenizer = handle->model->get_tokenizer();
         if (!tokenizer) {
@@ -178,7 +174,7 @@ int cactus_transcribe(
         }
 
         std::vector<uint32_t> tokens = tokenizer->encode(std::string(prompt));
-        if (tokens.empty()) {
+        if (tokens.empty() && !is_moonshine) {
             CACTUS_LOG_ERROR("transcribe", "Decoder input tokens empty after encoding prompt");
             handle_error_response("Decoder input tokens empty", response_buffer, buffer_size);
             return -1;
@@ -186,7 +182,6 @@ int cactus_transcribe(
 
         size_t max_allowed_tokens = WHISPER_MAX_DECODER_POSITIONS - tokens.size();
         if (max_tokens > max_allowed_tokens) {
-            CACTUS_LOG_WARN("transcribe", "max_tokens exceeds limit, reducing to " << max_allowed_tokens);
             max_tokens = max_allowed_tokens;
         }
 
@@ -198,11 +193,29 @@ int cactus_transcribe(
         std::vector<uint32_t> generated_tokens;
         std::string final_text;
 
-        uint32_t next_token = handle->model->decode_with_audio(tokens, mel_bins, temperature, top_p, top_k);
+        float first_token_entropy = 0.0f;
+        float total_entropy_sum = 0.0f;
+        size_t total_entropy_count = 0;
+
+        float max_tps = handle->model->get_config().default_max_tps;
+        if (max_tps < 0) {
+            max_tps = 100;
+        }
+
+        float audio_length = audio_features.size() / 16000.0f;
+        size_t max_tps_tokens = static_cast<size_t>(audio_length * max_tps);
+        if (max_tokens > max_tps_tokens) {
+            max_tokens = max_tps_tokens;
+        }
+
+        uint32_t next_token = handle->model->decode_with_audio(tokens, audio_features, temperature, top_p, top_k, "", &first_token_entropy);
         {
             auto t_first = std::chrono::high_resolution_clock::now();
             time_to_first_token = std::chrono::duration_cast<std::chrono::microseconds>(t_first - start_time).count() / 1000.0;
         }
+
+        total_entropy_sum += first_token_entropy;
+        total_entropy_count++;
 
         generated_tokens.push_back(next_token);
         tokens.push_back(next_token);
@@ -216,7 +229,12 @@ int cactus_transcribe(
             for (size_t i = 1; i < max_tokens; ++i) {
                 if (handle->should_stop) break;
 
-                next_token = handle->model->decode_with_audio(tokens, mel_bins, temperature, top_p, top_k);
+                float token_entropy = 0.0f;
+                next_token = handle->model->decode_with_audio(tokens, audio_features, temperature, top_p, top_k, "", &token_entropy);
+
+                total_entropy_sum += token_entropy;
+                total_entropy_count++;
+
                 generated_tokens.push_back(next_token);
                 tokens.push_back(next_token);
                 completion_tokens++;
@@ -228,6 +246,9 @@ int cactus_transcribe(
                 if (matches_stop_sequence(generated_tokens, stop_token_sequences)) break;
             }
         }
+
+        float mean_entropy = total_entropy_count > 0 ? total_entropy_sum / static_cast<float>(total_entropy_count) : 0.0f;
+        float confidence = 1.0f - mean_entropy;
 
         auto end_time = std::chrono::high_resolution_clock::now();
         double total_time_ms = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time).count() / 1000.0;
@@ -241,13 +262,23 @@ int cactus_transcribe(
         double decode_tps = (completion_tokens > 1 && decode_time_ms > 0.0) ? ((completion_tokens - 1) * 1000.0) / decode_time_ms : 0.0;
 
         std::string cleaned_text = final_text;
-        const std::string token_to_remove = "<|startoftranscript|>";
-        size_t pos = 0;
-        while ((pos = cleaned_text.find(token_to_remove, pos)) != std::string::npos) {
-            cleaned_text.erase(pos, token_to_remove.length());
+        
+        const std::vector<std::string> tokens_to_remove = {
+            "<|startoftranscript|>",
+            "</s>"
+        };
+        for (const auto& token_to_remove : tokens_to_remove) {
+            size_t pos = 0;
+            while ((pos = cleaned_text.find(token_to_remove, pos)) != std::string::npos) {
+                cleaned_text.erase(pos, token_to_remove.length());
+            }
+        }
+        
+        if (!cleaned_text.empty() && cleaned_text[0] == ' ') {
+            cleaned_text.erase(0, 1);
         }
 
-        std::string json = construct_response_json(cleaned_text, {}, time_to_first_token, total_time_ms, prefill_tps, decode_tps, prompt_tokens, completion_tokens);
+        std::string json = construct_response_json(cleaned_text, {}, time_to_first_token, total_time_ms, prefill_tps, decode_tps, prompt_tokens, completion_tokens, confidence);
 
         if (json.size() >= buffer_size) {
             handle_error_response("Response buffer too small", response_buffer, buffer_size);
@@ -256,49 +287,15 @@ int cactus_transcribe(
 
         std::strcpy(response_buffer, json.c_str());
 
-        CactusTelemetry::getInstance().recordTranscription(
-            handle->model_name,
-            true,
-            time_to_first_token,
-            decode_tps,
-            total_time_ms,
-            completion_tokens,
-            ""
-        );
-
         return static_cast<int>(json.size());
     }
     catch (const std::exception& e) {
         CACTUS_LOG_ERROR("transcribe", "Exception: " << e.what());
-
-        auto* handle = static_cast<CactusModelHandle*>(model);
-        CactusTelemetry::getInstance().recordTranscription(
-            handle->model_name,
-            false,
-            0.0,
-            0,
-            0.0,
-            0,
-            std::string(e.what())
-        );
-
         handle_error_response(e.what(), response_buffer, buffer_size);
         return -1;
     }
     catch (...) {
         CACTUS_LOG_ERROR("transcribe", "Unknown exception during transcription");
-
-        auto* handle = static_cast<CactusModelHandle*>(model);
-        CactusTelemetry::getInstance().recordTranscription(
-            handle->model_name,
-            false,
-            0.0,
-            0,
-            0.0,
-            0,
-            "Unknown error in transcribe"
-        );
-
         handle_error_response("Unknown error in transcribe", response_buffer, buffer_size);
         return -1;
     }

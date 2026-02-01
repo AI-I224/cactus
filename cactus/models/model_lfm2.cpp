@@ -169,13 +169,13 @@ size_t LFM2Model::build_conv1d(CactusGraph* gb, size_t input, uint32_t layer_idx
         std::vector<size_t> segments;
         if (view.len2 > 0) {
             size_t left_node = gb->input({view.len2, C}, conv_cache_.precision);
-            gb->set_input(left_node, view.ptr2, conv_cache_.precision);
+            gb->set_external_input(left_node, const_cast<void*>(view.ptr2), conv_cache_.precision);
             segments.push_back(left_node);
-            
+
         }
         if (view.len1 > 0) {
             size_t right_node = gb->input({view.len1, C}, conv_cache_.precision);
-            gb->set_input(right_node, view.ptr1, conv_cache_.precision);
+            gb->set_external_input(right_node, const_cast<void*>(view.ptr1), conv_cache_.precision);
             segments.push_back(right_node);
             
         }

@@ -149,6 +149,32 @@ void cactus_gelu_f16_erf(const __fp16* input, __fp16* output, size_t num_element
     );
 }
 
+void cactus_tanh_f16(const __fp16* input, __fp16* output, size_t num_elements) {
+    CactusThreading::parallel_for(num_elements, CactusThreading::Thresholds::SCALAR_EXPENSIVE,
+        [&](size_t start_idx, size_t end_idx) {
+            constexpr size_t SIMD_WIDTH = 8;
+            const size_t vectorized_end = start_idx + ((end_idx - start_idx) / SIMD_WIDTH) * SIMD_WIDTH;
+
+            for (size_t i = start_idx; i < vectorized_end; i += SIMD_WIDTH) {
+                float16x8_t x_f16 = vld1q_f16(&input[i]);
+
+                float32x4_t x_low = vcvt_f32_f16(vget_low_f16(x_f16));
+                float32x4_t x_high = vcvt_f32_f16(vget_high_f16(x_f16));
+
+                float32x4_t tanh_low = fast_tanh_f32x4(x_low);
+                float32x4_t tanh_high = fast_tanh_f32x4(x_high);
+
+                float16x8_t tanh_f16 = vcombine_f16(vcvt_f16_f32(tanh_low), vcvt_f16_f32(tanh_high));
+                vst1q_f16(&output[i], tanh_f16);
+            }
+
+            for (size_t i = vectorized_end; i < end_idx; ++i) {
+                float x = static_cast<float>(input[i]);
+                output[i] = static_cast<__fp16>(std::tanh(x));
+            }
+        });
+}
+
 void kernel_softmax_f16_single(const __fp16* input, __fp16* output, size_t vocab_size) {
 
     constexpr size_t SIMD_WIDTH = 8;

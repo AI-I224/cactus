@@ -28,6 +28,10 @@ extern void compute_attention_int8_hybrid_node(GraphNode& node, const std::vecto
 extern void compute_layernorm_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
 extern void compute_conv1d_causal_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
 extern void compute_conv1d_k3_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
+extern void compute_conv1d_k7s3_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
+extern void compute_conv1d_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
+extern void compute_groupnorm_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
+extern void compute_rope_gptj_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
 extern void shrink_thread_local_buffers();
 
 extern void compute_transpose_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
@@ -41,6 +45,7 @@ extern void compute_bilinear_interpolation_node(GraphNode& node, const std::vect
 extern void compute_sample_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
 extern void compute_topk_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
 extern void compute_scatter_topk_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
+extern void compute_persistent_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
 extern void compute_quantize_activations_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
 
 static const char* op_type_names[] = {
@@ -49,13 +54,15 @@ static const char* op_type_names[] = {
     "MATMUL", "TRANSPOSE", "RESHAPE", "SLICE", "GATHER", "EMBEDDING",
     "BILINEAR_INTERPOLATION",
     "SUM", "MEAN", "VARIANCE", "MIN", "MAX",
-    "RMS_NORM", "ROPE", "SOFTMAX", "ATTENTION", "ATTENTION_INT8_HYBRID", "CONV1D_CAUSAL", "CONV1D_K3",
+    "RMS_NORM", "ROPE", "ROPE_GPTJ", "SOFTMAX", "ATTENTION", "ATTENTION_INT8_HYBRID", "CONV1D_CAUSAL", "CONV1D_K3", "CONV1D_K7S3", "CONV1D",
     "SCALAR_ADD", "SCALAR_SUBTRACT", "SCALAR_MULTIPLY", "SCALAR_DIVIDE",
     "SCALAR_EXP", "SCALAR_SQRT", "SCALAR_COS", "SCALAR_SIN",
-    "SILU", "GELU", "GELU_ERF", "SAMPLE", "CONCAT",
+    "SILU", "GELU", "GELU_ERF", "TANH",
+    "SAMPLE", "CONCAT",
     "SCATTER_TOPK",
-    "TOPK", "LAYERNORM",
+    "TOPK", "LAYERNORM", "GROUPNORM",
     "INDEX",
+    "PERSISTENT",
     "QUANTIZE_ACTIVATIONS"
 };
 
@@ -90,6 +97,7 @@ void compute_node_optimized(GraphNode& node, const std::vector<std::unique_ptr<G
         case OpType::SILU:
         case OpType::GELU:
         case OpType::GELU_ERF:
+        case OpType::TANH:
             compute_activation_node(node, nodes, node_index_map);
             break;
 
@@ -121,6 +129,10 @@ void compute_node_optimized(GraphNode& node, const std::vector<std::unique_ptr<G
             compute_rope_node(node, nodes, node_index_map);
             break;
 
+        case OpType::ROPE_GPTJ:
+            compute_rope_gptj_node(node, nodes, node_index_map);
+            break;
+
         case OpType::SOFTMAX:
             compute_softmax_node(node, nodes, node_index_map);
             break;
@@ -137,12 +149,28 @@ void compute_node_optimized(GraphNode& node, const std::vector<std::unique_ptr<G
             compute_layernorm_node(node, nodes, node_index_map);
             break;
 
+        case OpType::GROUPNORM:
+            compute_groupnorm_node(node, nodes, node_index_map);
+            break;
+
+        case OpType::PERSISTENT:
+            compute_persistent_node(node, nodes, node_index_map);
+            break;
+
         case OpType::CONV1D_CAUSAL:
             compute_conv1d_causal_node(node, nodes, node_index_map);
             break;
 
         case OpType::CONV1D_K3:
             compute_conv1d_k3_node(node, nodes, node_index_map);
+            break;
+
+        case OpType::CONV1D_K7S3:
+            compute_conv1d_k7s3_node(node, nodes, node_index_map);
+            break;
+
+        case OpType::CONV1D:
+            compute_conv1d_node(node, nodes, node_index_map);
             break;
 
         case OpType::TRANSPOSE:
@@ -250,22 +278,33 @@ void CactusGraph::execute(const std::string& profile_file) {
     bool capture_to_stdout = get_env_int("CACTUS_CAPTURE_STDOUT", 0) != 0;
     std::string capture_file_path = get_env_str("CACTUS_CAPTURE_FILE");
     bool capture_requested = get_env_int("CACTUS_CAPTURE_ENABLE", 0) != 0;
+    std::string capture_dir = get_env_str("CACTUS_CAPTURE_DIR");
 
     if (!capture_requested) {
-        capture_requested = capture_to_stdout || !capture_file_path.empty();
-    } else if (capture_file_path.empty() && !capture_to_stdout) {
+        capture_requested = capture_to_stdout || !capture_file_path.empty() || !capture_dir.empty();
+    } else if (capture_file_path.empty() && !capture_to_stdout && capture_dir.empty()) {
         capture_to_stdout = true;
     }
 
     size_t capture_preview_count = static_cast<size_t>(get_env_int("CACTUS_CAPTURE_PREVIEW_COUNT", 8));
     size_t capture_max_elements = static_cast<size_t>(get_env_int("CACTUS_CAPTURE_MAX_ELEMENTS", 65536));
 
-    bool enable_profiling = !profile_file.empty();
+    std::string env_profile = get_env_str("CACTUS_PROFILE_FILE");
+    if (env_profile.empty()) env_profile = get_env_str("CACTUS_PROFILE");
+
+    std::string target_profile = profile_file;
+    if (target_profile.empty() && !env_profile.empty()) {
+        target_profile = env_profile;
+    }
+
+    bool enable_profiling = !target_profile.empty();
+    bool to_stdout = (target_profile == "stdout" || target_profile == "-");
+
     std::ofstream profile_out;
     std::ostream* out = &std::cout;
 
-    if (enable_profiling) {
-        profile_out.open(profile_file);
+    if (enable_profiling && !to_stdout) {
+        profile_out.open(target_profile, std::ios::app);
         if (profile_out.is_open()) {
             out = &profile_out;
         }
@@ -293,6 +332,10 @@ void CactusGraph::execute(const std::string& profile_file) {
             auto start = std::chrono::high_resolution_clock::now();
 
             compute_node_optimized(*node, nodes_, node_index_map_);
+            
+            if (node->op_type == OpType::PERSISTENT) {
+                populated_node_ids_.insert(node->id);
+            }
 
             auto end = std::chrono::high_resolution_clock::now();
             auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
@@ -387,6 +430,10 @@ void CactusGraph::execute(const std::string& profile_file) {
                  << values_str << weights_str << std::endl;
         } else {
             compute_node_optimized(*node, nodes_, node_index_map_);
+            
+            if (node->op_type == OpType::PERSISTENT) {
+                populated_node_ids_.insert(node->id);
+            }
         }
     }
 
@@ -414,7 +461,13 @@ void CactusGraph::execute(const std::string& profile_file) {
             }
         }
 
-        if (capture_outputs.empty()) {
+        if (!capture_dir.empty()) {
+            std::filesystem::path dir_path(capture_dir);
+            std::error_code ec;
+            std::filesystem::create_directories(dir_path, ec);
+        }
+
+        if (capture_outputs.empty() && capture_dir.empty()) {
             capture_requested = false;
         }
     }
@@ -551,6 +604,19 @@ void CactusGraph::execute(const std::string& profile_file) {
                     has_data = false;
                 }
 
+                if (!capture_dir.empty() && has_data) {
+                    std::string safe_name = entry.name;
+                    std::string filename = capture_dir + "/" + safe_name + ".bin";
+                    std::ofstream bin_file(filename, std::ios::binary);
+                    if (bin_file.is_open()) {
+                        size_t bytes_to_write = buffer.byte_size;
+                        if (truncated) {
+                             bytes_to_write = buffer.total_size * PrecisionTraits::size_of(buffer.precision);
+                        }
+                        bin_file.write(reinterpret_cast<const char*>(data_ptr), bytes_to_write);
+                    }
+                }
+
                 size_t processed_count = has_data ? elements_to_process : 0;
                 long double mean_ld = processed_count > 0 ? sum / processed_count : 0.0L;
                 long double variance_ld = processed_count > 0 ? (sum_sq / processed_count) - (mean_ld * mean_ld) : 0.0L;
@@ -638,6 +704,10 @@ void CactusGraph::soft_reset() {
     for (const auto& cache_entry : weight_cache_) {
         cached_node_ids.insert(cache_entry.second);
     }
+    
+    for (size_t pid : persistent_node_ids_) {
+        cached_node_ids.insert(pid);
+    }
 
     size_t max_preserved_id = 0;
     for (const auto& node : nodes_) {
@@ -674,6 +744,10 @@ void CactusGraph::soft_reset_keep_pool() {
     std::set<size_t> cached_node_ids;
     for (const auto& cache_entry : weight_cache_) {
         cached_node_ids.insert(cache_entry.second);
+    }
+
+    for (size_t pid : persistent_node_ids_) {
+        cached_node_ids.insert(pid);
     }
 
     size_t max_preserved_id = 0;

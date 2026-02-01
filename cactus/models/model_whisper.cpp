@@ -2,6 +2,7 @@
 #include "../graph/graph.h"
 #include "../npu/npu.h"
 #include "../kernel/kernel.h"
+#include <algorithm>
 #include <cmath>
 #include <stdexcept>
 #include <set>
@@ -32,8 +33,8 @@ WhisperModel::WhisperModel(const Config& config) : Model(config) {
     attention_scale_ = 1.0f / std::sqrt(hd);
 
     encoder_block_out_nodes_.resize(config.num_layers, 0);
-    encoder_k_nodes_.assign(config.num_layers, 0);
-    encoder_v_nodes_.assign(config.num_layers, 0);
+    encoder_k_persistent_.assign(config.num_layers, 0);
+    encoder_v_persistent_.assign(config.num_layers, 0);
 
 }
 
@@ -167,7 +168,7 @@ size_t WhisperModel::build_decoder_mlp(CactusGraph* gb, size_t input, uint32_t l
 
 
 
-size_t WhisperModel::build_encoder_attention(CactusGraph* gb, size_t input, uint32_t layer_idx, ComputeBackend backend, bool use_cache, size_t /*position_offset*/){
+size_t WhisperModel::build_encoder_attention(CactusGraph* gb, size_t input, uint32_t layer_idx, ComputeBackend backend, bool /*use_cache*/, size_t /*position_offset*/){
 
     const auto& layer = weight_nodes_.layers[layer_idx];
 
@@ -189,20 +190,14 @@ size_t WhisperModel::build_encoder_attention(CactusGraph* gb, size_t input, uint
     size_t k_4d = 0;
     size_t v_4d = 0;
 
-    if (use_cache && encoder_kv_ready_) {
-        const auto& k_shape = encoder_k_shape_[layer_idx];
-        const auto& v_shape = encoder_v_shape_[layer_idx];
+    bool is_populated = (encoder_k_persistent_[layer_idx] != 0 &&
+                         gb->is_populated(encoder_k_persistent_[layer_idx]));
 
-        size_t cache_k_node = gb->input(k_shape, encoder_kv_precision_);
-        size_t cache_v_node = gb->input(v_shape, encoder_kv_precision_);
-
-        gb->set_input(cache_k_node, encoder_k_host_[layer_idx].data(), encoder_kv_precision_);
-        gb->set_input(cache_v_node, encoder_v_host_[layer_idx].data(), encoder_kv_precision_);
-
-        k_4d = cache_k_node;
-        v_4d = cache_v_node;
+    if (is_populated) {
+        k_4d = encoder_k_persistent_[layer_idx];
+        v_4d = encoder_v_persistent_[layer_idx];
     } else {
-        size_t enc_norm = weight_nodes_.encoder_output;
+        size_t enc_norm = last_encoder_post_norm_node_;
 
         size_t k = gb->matmul(enc_norm, layer.decoder_encoder_attn_k_weight, true, backend);
         size_t v = gb->matmul(enc_norm, layer.decoder_encoder_attn_v_weight, true, backend);
@@ -217,10 +212,12 @@ size_t WhisperModel::build_encoder_attention(CactusGraph* gb, size_t input, uint
         k_4d = gb->reshape(k, {1, T_enc, kv_heads, head_dim});
         v_4d = gb->reshape(v, {1, T_enc, kv_heads, head_dim});
 
-        if (!encoder_kv_ready_) {
-            encoder_k_nodes_[layer_idx] = k_4d;
-            encoder_v_nodes_[layer_idx] = v_4d;
+        if (encoder_k_persistent_[layer_idx] == 0) {
+            encoder_k_persistent_[layer_idx] = gb->persistent(k_4d);
+            encoder_v_persistent_[layer_idx] = gb->persistent(v_4d);
         }
+        k_4d = encoder_k_persistent_[layer_idx];
+        v_4d = encoder_v_persistent_[layer_idx];
     }
 
     size_t attn = gb->attention(q, k_4d, v_4d, attention_scale_, false);
@@ -240,13 +237,25 @@ void WhisperModel::reset_graph_side_cache_nodes() {
 void WhisperModel::reset_cache() {
     Model::reset_cache();
     encoder_ready_ = false;
-    encoder_kv_ready_ = false;
     first_decode_step_ = true;
-    encoder_output_host_.clear();
-    encoder_k_host_.clear();
-    encoder_v_host_.clear();
-    encoder_k_shape_.clear();
-    encoder_v_shape_.clear();
+
+    auto* gb = static_cast<CactusGraph*>(graph_handle_);
+    if (gb) {
+        if (encoder_output_persistent_ != 0) {
+            gb->invalidate_persistent(encoder_output_persistent_);
+            encoder_output_persistent_ = 0;
+        }
+        for (size_t i = 0; i < encoder_k_persistent_.size(); ++i) {
+            if (encoder_k_persistent_[i] != 0) {
+                gb->invalidate_persistent(encoder_k_persistent_[i]);
+                encoder_k_persistent_[i] = 0;
+            }
+            if (encoder_v_persistent_[i] != 0) {
+                gb->invalidate_persistent(encoder_v_persistent_[i]);
+                encoder_v_persistent_[i] = 0;
+            }
+        }
+    }
 }
 
 size_t WhisperModel::build_decoder_self_attention(CactusGraph* gb, size_t input, uint32_t layer_idx, ComputeBackend backend, bool use_cache, size_t position_offset){
@@ -296,11 +305,11 @@ size_t WhisperModel::build_decoder_self_attention(CactusGraph* gb, size_t input,
         );
 
         if (k_view.ptr2 == nullptr && v_view.ptr2 == nullptr) {
-            gb->set_input(cache_k_node, k_view.ptr1, kv_cache_.precision);
-            gb->set_input(cache_v_node, v_view.ptr1, kv_cache_.precision);
+            gb->set_external_input(cache_k_node, const_cast<void*>(k_view.ptr1), kv_cache_.precision);
+            gb->set_external_input(cache_v_node, const_cast<void*>(v_view.ptr1), kv_cache_.precision);
         } else {
-            gb->set_input(cache_k_node, kv_cache_.get_key_ptr(layer_idx), kv_cache_.precision);
-            gb->set_input(cache_v_node, kv_cache_.get_value_ptr(layer_idx), kv_cache_.precision);
+            gb->set_external_input(cache_k_node, kv_cache_.get_key_ptr(layer_idx), kv_cache_.precision);
+            gb->set_external_input(cache_v_node, kv_cache_.get_value_ptr(layer_idx), kv_cache_.precision);
         }
 
         final_k = gb->concat(cache_k_node, k_4d, 1);
@@ -456,12 +465,12 @@ size_t WhisperModel::build_decoder_transformer_block(CactusGraph* gb, size_t hid
 
 }
 
-void WhisperModel::run_encoder(const std::vector<float>& mel_bins)
+void WhisperModel::run_encoder(const std::vector<float>& audio_features)
 {
-    if (mel_bins.size() % 80 != 0)
+    if (audio_features.size() % 80 != 0)
         throw std::runtime_error("Mel bins length must be divisible by 80.");
 
-    size_t T_mel = mel_bins.size() / 80;
+    size_t T_mel = audio_features.size() / 80;
     if (T_mel == 0)
         throw std::runtime_error("Mel bins has zero frames.");
 
@@ -482,45 +491,28 @@ void WhisperModel::run_encoder(const std::vector<float>& mel_bins)
             throw std::runtime_error("NPU encoder output has unexpected shape");
         }
 
-        std::vector<__fp16> mel_bins_f16(mel_bins.size());
-        cactus_fp32_to_fp16(mel_bins.data(), mel_bins_f16.data(), mel_bins.size());
+        std::vector<__fp16> audio_features_f16(audio_features.size());
+        cactus_fp32_to_fp16(audio_features.data(), audio_features_f16.data(), audio_features.size());
 
         std::vector<int> input_shape = {1, 80, static_cast<int>(T_mel)};
+        size_t total_elements = T_enc * D_enc;
+        std::vector<__fp16> npu_output(total_elements);
+        size_t elements_written = npu_encoder_->encode(
+            audio_features_f16.data(),
+            npu_output.data(),
+            input_shape,
+            "x",
+            ""
+        );
 
-        __fp16* output_buffer = npu_encoder_->get_output_buffer();
-        if (output_buffer) {
-            size_t elements_written = npu_encoder_->encode(
-                mel_bins_f16.data(),
-                output_buffer,  
-                input_shape,
-                "x",
-                ""
-            );
+        if (elements_written > 0) {
+            size_t enc_output_node = gb->input({T_enc, D_enc}, Precision::FP16);
+            gb->set_input(enc_output_node, npu_output.data(), Precision::FP16);
 
-            if (elements_written > 0) {
-                size_t enc_output_node = gb->input({T_enc, D_enc}, Precision::FP16);
-                gb->set_input(enc_output_node, output_buffer, Precision::FP16);
-
-                weight_nodes_.encoder_output = enc_output_node;
-                return;
-            }
-        } else {
-            std::vector<__fp16> npu_output(T_enc * D_enc);
-            size_t elements_written = npu_encoder_->encode(
-                mel_bins_f16.data(),
-                npu_output.data(),
-                input_shape,
-                "x",
-                ""
-            );
-
-            if (elements_written > 0) {
-                size_t enc_output_node = gb->input({T_enc, D_enc}, Precision::FP16);
-                gb->set_input(enc_output_node, npu_output.data(), Precision::FP16);
-
-                weight_nodes_.encoder_output = enc_output_node;
-                return;
-            }
+            size_t enc_output_persistent = gb->persistent(enc_output_node);
+            encoder_output_persistent_ = enc_output_persistent;
+            last_encoder_post_norm_node_ = enc_output_persistent;
+            return;
         }
     }
 
@@ -530,11 +522,11 @@ void WhisperModel::run_encoder(const std::vector<float>& mel_bins)
         : ComputeBackend::NPU;
 
     size_t mel_input = 0;
-    std::vector<__fp16> mel_bins_f16(mel_bins.size());
-    cactus_fp32_to_fp16(mel_bins.data(), mel_bins_f16.data(), mel_bins.size());
+    std::vector<__fp16> audio_features_f16(audio_features.size());
+    cactus_fp32_to_fp16(audio_features.data(), audio_features_f16.data(), audio_features.size());
 
     mel_input = gb->input({1, 80, T_mel}, Precision::FP16);
-    gb->set_input(mel_input, mel_bins_f16.data(), Precision::FP16);
+    gb->set_input(mel_input, audio_features_f16.data(), Precision::FP16);
 
     size_t conv2_transposed = build_conv1d(gb, mel_input);
 
@@ -572,10 +564,10 @@ void WhisperModel::run_encoder(const std::vector<float>& mel_bins)
         weight_nodes_.encoder_norm_weight,
         weight_nodes_.encoder_norm_bias
     );
-    last_encoder_post_norm_node_ = h_norm;
 
-
-    weight_nodes_.encoder_output = h_norm;
+    size_t h_norm_persistent = gb->persistent(h_norm);
+    encoder_output_persistent_ = h_norm_persistent;
+    last_encoder_post_norm_node_ = h_norm_persistent;
 }
 
 
@@ -651,7 +643,7 @@ size_t WhisperModel::run_decoder_step(const std::vector<uint32_t>& tokens, bool 
 }
 
 
-size_t WhisperModel::forward(const std::vector<float>& mel_bins, const std::vector<uint32_t>& tokens, bool use_cache)
+size_t WhisperModel::forward(const std::vector<float>& audio_features, const std::vector<uint32_t>& tokens, bool use_cache)
 {
 
     if (!initialized_ || !graph_handle_) {
@@ -662,14 +654,14 @@ size_t WhisperModel::forward(const std::vector<float>& mel_bins, const std::vect
         kv_cache_.reset();
         kv_cache_.current_seq_len = 0;
         reset_graph_side_cache_nodes();
-        run_encoder(mel_bins);
+        run_encoder(audio_features);
     }
 
     return run_decoder_step(tokens, use_cache, false);
 }
 
-std::vector<float> WhisperModel::get_audio_embeddings(const std::vector<float>& mel_bins) {
-    run_encoder(mel_bins);
+std::vector<float> WhisperModel::get_audio_embeddings(const std::vector<float>& audio_features) {
+    run_encoder(audio_features);
 
     auto* gb = static_cast<CactusGraph*>(graph_handle_);
 
@@ -690,7 +682,7 @@ std::vector<float> WhisperModel::get_audio_embeddings(const std::vector<float>& 
 
 uint32_t WhisperModel::decode_with_audio(
     const std::vector<uint32_t>& tokens,
-    const std::vector<float>& mel_bins,
+    const std::vector<float>& audio_features,
     float temperature,
     float top_p,
     size_t top_k,
@@ -699,9 +691,7 @@ uint32_t WhisperModel::decode_with_audio(
 {
     if (!initialized_ || !graph_handle_)
         throw std::runtime_error("Model not initialized - call init() first");
-    if (tokens.empty())
-        throw std::runtime_error("Token sequence cannot be empty");
-    if (mel_bins.empty())
+    if (audio_features.empty())
         throw std::runtime_error("Mel bins cannot be empty in Whisper decode_with_audio");
 
     auto* gb = static_cast<CactusGraph*>(graph_handle_);
@@ -723,125 +713,23 @@ uint32_t WhisperModel::decode_with_audio(
         kv_cache_.current_seq_len = 0;
         reset_graph_side_cache_nodes();
 
-        encoder_kv_ready_ = false;
-        encoder_k_nodes_.assign(config_.num_layers, 0);
-        encoder_v_nodes_.assign(config_.num_layers, 0);
-        encoder_k_host_.clear();
-        encoder_v_host_.clear();
-        encoder_k_shape_.clear();
-        encoder_v_shape_.clear();
-
         first_decode_step_ = true;
-        run_encoder(mel_bins);
+        run_encoder(audio_features);
         logits_node = run_decoder_step(full_tokens, false, false);
+        encoder_ready_ = true;
     }
-
     else
     {
         gb->soft_reset();
         reset_graph_side_cache_nodes();
 
-        if (encoder_output_host_.empty())
-            throw std::runtime_error("Missing encoder_output_host_ in warm step!");
-
-        size_t enc_node = gb->input(encoder_output_shape_, encoder_output_precision_);
-        gb->set_input(enc_node, encoder_output_host_.data(), encoder_output_precision_);
-        weight_nodes_.encoder_output = enc_node;
-
         std::vector<uint32_t> last_token_vec = { tokens.back() };
         logits_node = run_decoder_step(last_token_vec, true, true);
     }
-    
+
     size_t sampled_token_id = gb->sample(logits_node, temperature, top_p, top_k);
     if (!profile_file.empty()) gb->execute(profile_file);
     else gb->execute();
-
-    if (cold_start)
-    {
-        auto& out_buf = gb->get_output_buffer(weight_nodes_.encoder_output);
-
-        encoder_output_shape_      = out_buf.shape;
-        encoder_output_precision_  = out_buf.precision;
-
-        size_t total_elems = 1;
-        for (auto s : out_buf.shape)
-            total_elems *= s;
-
-        size_t elem_size = 0;
-        switch (out_buf.precision) {
-            case Precision::FP32: elem_size = sizeof(float);    break;
-            case Precision::FP16: elem_size = sizeof(uint16_t); break;
-            case Precision::INT8: elem_size = sizeof(int8_t);   break;
-            default:
-                throw std::runtime_error("Unsupported encoder_output precision in WhisperModel");
-        }
-
-        const size_t total_bytes = total_elems * elem_size;
-
-        encoder_output_host_.resize(total_bytes);
-        std::memcpy(
-            encoder_output_host_.data(),
-            gb->get_output(weight_nodes_.encoder_output),
-            total_bytes
-        );
-
-        {
-            if (config_.num_layers == 0) {
-                throw std::runtime_error("WhisperModel: num_layers is zero?");
-            }
-
-            auto& k0_buf = gb->get_output_buffer(encoder_k_nodes_[0]);
-            encoder_kv_precision_ = k0_buf.precision;
-
-            encoder_k_host_.resize(config_.num_layers);
-            encoder_v_host_.resize(config_.num_layers);
-            encoder_k_shape_.resize(config_.num_layers);
-            encoder_v_shape_.resize(config_.num_layers);
-
-            size_t kv_elem_size = 0;
-            switch (encoder_kv_precision_) {
-                case Precision::FP32: kv_elem_size = sizeof(float);    break;
-                case Precision::FP16: kv_elem_size = sizeof(uint16_t); break;
-                case Precision::INT8: kv_elem_size = sizeof(int8_t);   break;
-                default:
-                    throw std::runtime_error("Unsupported encoder K/V precision in WhisperModel");
-            }
-
-            for (uint32_t i = 0; i < config_.num_layers; ++i) {
-                size_t k_node = encoder_k_nodes_[i];
-                size_t v_node = encoder_v_nodes_[i];
-
-                auto& k_buf = gb->get_output_buffer(k_node);
-                auto& v_buf = gb->get_output_buffer(v_node);
-
-                encoder_k_shape_[i] = k_buf.shape;
-                encoder_v_shape_[i] = v_buf.shape;
-
-                size_t k_elems = 1;
-                for (auto s : k_buf.shape) k_elems *= s;
-                size_t v_elems = 1;
-                for (auto s : v_buf.shape) v_elems *= s;
-
-                encoder_k_host_[i].resize(k_elems * kv_elem_size);
-                encoder_v_host_[i].resize(v_elems * kv_elem_size);
-
-                std::memcpy(
-                    encoder_k_host_[i].data(),
-                    gb->get_output(k_node),
-                    k_elems * kv_elem_size
-                );
-                std::memcpy(
-                    encoder_v_host_[i].data(),
-                    gb->get_output(v_node),
-                    v_elems * kv_elem_size
-                );
-            }
-
-            encoder_kv_ready_ = true;
-        }
-
-        encoder_ready_ = true;
-    }
 
 
     if (out_entropy) {

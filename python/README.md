@@ -226,14 +226,6 @@ if error:
     print(f"Error: {error}")
 ```
 
-### `cactus_set_pro_key(key)`
-
-Set Cactus Pro key for NPU acceleration (Apple devices).
-
-```python
-cactus_set_pro_key("your-key")  # email founders@cactuscompute.com
-```
-
 ### `cactus_tokenize(model, text)`
 
 Tokenize text. Returns list of token IDs.

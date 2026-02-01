@@ -202,9 +202,6 @@ func createStreamTranscriber() throws -> StreamTranscriber
 
 func reset()  // Clear KV cache
 func stop()   // Stop generation
-
-static func setTelemetryToken(_ token: String)
-static func setProKey(_ key: String)
 ```
 
 ### CompletionResult

@@ -183,8 +183,6 @@ class Cactus {
   void dispose();
 
   static String getLastError();
-  static void setTelemetryToken(String token);
-  static void setProKey(String key);
 }
 ```
 

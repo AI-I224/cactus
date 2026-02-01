@@ -86,3 +86,26 @@ foreach(TEST_FILE ${TEST_SOURCES})
 endforeach()
 
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+
+foreach(APP_NAME chat asr)
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${APP_NAME}.cpp")
+        add_executable(${APP_NAME} ${APP_NAME}.cpp)
+        target_link_libraries(${APP_NAME} PRIVATE ${CACTUS_LIB})
+
+        if(MMAN_LIB)
+            target_link_libraries(${APP_NAME} PRIVATE ${MMAN_LIB})
+        endif()
+
+        if(APPLE AND CURL_FOUND)
+            target_link_libraries(${APP_NAME} PRIVATE ${CURL_LIBRARIES})
+            target_include_directories(${APP_NAME} PRIVATE ${CURL_INCLUDE_DIRS})
+        endif()
+
+        if(APPLE)
+            target_link_libraries(${APP_NAME} PRIVATE ${COREML_FRAMEWORK} ${FOUNDATION_FRAMEWORK})
+        endif()
+
+        target_include_directories(${APP_NAME} PRIVATE ${CACTUS_ROOT})
+        message(STATUS "Added executable: ${APP_NAME}")
+    endif()
+endforeach()

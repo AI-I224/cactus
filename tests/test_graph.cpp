@@ -778,36 +778,79 @@ bool test_mmap_gather() {
 bool test_embedding_operation() {
     CactusGraph graph;
 
-    // INT8 embeddings → FP16 output (correct pattern for quantized storage)
-    size_t embeddings = graph.input({4, 3}, Precision::INT8);
-    size_t indices = graph.input({2, 2}, Precision::INT8);
+    const size_t vocab_size = 4;
+    const size_t hidden_dim = 8;
+    const size_t group_size = 8;
+    const size_t num_groups = hidden_dim / group_size;
+    const size_t BLOCK_SIZE = 4;
+
+    std::vector<int8_t> emb_rowmajor(vocab_size * hidden_dim);
+    for (size_t row = 0; row < vocab_size; ++row) {
+        for (size_t k = 0; k < hidden_dim; ++k) {
+            emb_rowmajor[row * hidden_dim + k] = static_cast<int8_t>((row + 1) * 10 + k);
+        }
+    }
+
+    std::vector<int8_t> emb_interleaved(vocab_size * hidden_dim);
+    size_t N_blocks = vocab_size / BLOCK_SIZE;
+    size_t K_groups = hidden_dim / BLOCK_SIZE;
+
+    for (size_t n_blk = 0; n_blk < N_blocks; ++n_blk) {
+        for (size_t k_grp = 0; k_grp < K_groups; ++k_grp) {
+            for (size_t lane = 0; lane < BLOCK_SIZE; ++lane) {
+                for (size_t k_within = 0; k_within < BLOCK_SIZE; ++k_within) {
+                    size_t src_row = n_blk * BLOCK_SIZE + lane;
+                    size_t src_k = k_grp * BLOCK_SIZE + k_within;
+                    size_t dst_idx = (n_blk * K_groups + k_grp) * 16 + lane * 4 + k_within;
+                    emb_interleaved[dst_idx] = emb_rowmajor[src_row * hidden_dim + src_k];
+                }
+            }
+        }
+    }
+
+    std::vector<__fp16> scales_rowmajor(vocab_size * num_groups);
+    for (size_t i = 0; i < scales_rowmajor.size(); ++i) {
+        scales_rowmajor[i] = static_cast<__fp16>(1.0f);
+    }
+
+    std::vector<__fp16> scales_interleaved(vocab_size * num_groups);
+    for (size_t n_blk = 0; n_blk < N_blocks; ++n_blk) {
+        for (size_t g = 0; g < num_groups; ++g) {
+            for (size_t lane = 0; lane < BLOCK_SIZE; ++lane) {
+                size_t src_row = n_blk * BLOCK_SIZE + lane;
+                size_t dst_idx = (n_blk * num_groups + g) * BLOCK_SIZE + lane;
+                scales_interleaved[dst_idx] = scales_rowmajor[src_row * num_groups + g];
+            }
+        }
+    }
+
+    size_t embeddings = graph.input({vocab_size, hidden_dim}, Precision::INT8);
+    graph.set_input(embeddings, emb_interleaved.data(), Precision::INT8);
+
+    graph.set_grouped_scales(embeddings, group_size, num_groups, scales_interleaved.data());
+    graph.set_interleaved(embeddings, true, vocab_size);
+
+    size_t indices = graph.input({4}, Precision::INT8);
     size_t embedded = graph.embedding(embeddings, indices);
 
-    std::vector<int8_t> emb_data = {
-        1, 5, 9,
-        2, 6, 10,
-        3, 7, 11,
-        4, 8, 12
-    };
-    std::vector<int8_t> idx_data = {0, 2, 3, 1};
-
-    graph.set_input(embeddings, emb_data.data(), Precision::INT8);
+    std::vector<int8_t> idx_data = {0, 2, 3, 1};  
     graph.set_input(indices, idx_data.data(), Precision::INT8);
     graph.execute();
 
-    // Embedding converts INT8 to FP16, so we need to check FP16 output
     __fp16* output = static_cast<__fp16*>(graph.get_output(embedded));
 
-    // Expected values (as FP16)
-    std::vector<__fp16> expected = {
-        1, 5, 9,
-        3, 7, 11,
-        4, 8, 12,
-        2, 6, 10
+    std::vector<float> expected = {
+        10, 11, 12, 13, 14, 15, 16, 17,  // idx 0
+        30, 31, 32, 33, 34, 35, 36, 37,  // idx 2
+        40, 41, 42, 43, 44, 45, 46, 47,  // idx 3
+        20, 21, 22, 23, 24, 25, 26, 27   // idx 1
     };
 
     for (size_t i = 0; i < expected.size(); ++i) {
-        if (std::abs(static_cast<float>(output[i]) - static_cast<float>(expected[i])) > 1e-6f) {
+        float out_val = static_cast<float>(output[i]);
+        if (std::abs(out_val - expected[i]) > 0.5f) {
+            std::cerr << "Embedding mismatch at " << i << ": got " << out_val
+                      << ", expected " << expected[i] << std::endl;
             return false;
         }
     }

@@ -79,6 +79,9 @@ void cactus_rms_norm_f16(const __fp16* input, const __fp16* weight, __fp16* outp
 void cactus_rope_f16(const __fp16* input, __fp16* output, size_t batch_size, size_t seq_len,
                       size_t num_heads, size_t head_dim, size_t start_pos, float theta);
 
+void cactus_gpt_j_rope_f16(const __fp16* input, __fp16* output, size_t batch_size, size_t seq_len,
+                           size_t num_heads, size_t head_dim, size_t rot_dim, size_t start_pos, float theta);
+
 void cactus_softmax_f16(const __fp16* input, __fp16* output, size_t batch_size,
                          size_t seq_len, size_t vocab_size);
 
@@ -87,6 +90,8 @@ void cactus_silu_f16(const __fp16* input, __fp16* output, size_t num_elements);
 void cactus_gelu_f16(const __fp16* input, __fp16* output, size_t num_elements);
 
 void cactus_gelu_f16_erf(const __fp16* input, __fp16* output, size_t num_elements);
+
+void cactus_tanh_f16(const __fp16* input, __fp16* output, size_t num_elements);
 
 void cactus_attention_f16(const __fp16* queries, const __fp16* keys, const __fp16* values, __fp16* output,
                           size_t batch_size, size_t seq_len, size_t kv_seq_len, size_t num_q_heads, size_t num_kv_heads,
@@ -126,6 +131,30 @@ void cactus_conv1d_f16_k3(
     size_t C_in,
     size_t C_out,
     size_t stride
+);
+
+void cactus_conv1d_f16(
+    const __fp16* input,
+    const __fp16* weight,
+    const __fp16* bias,
+    __fp16* output,
+    size_t N,
+    size_t L,
+    size_t C_in,
+    size_t C_out,
+    size_t K,
+    size_t stride
+);
+
+void cactus_conv1d_f16_k7s3_oc8(
+    const __fp16* input,
+    const __fp16* Wpack,
+    const __fp16* bias,
+    __fp16* output,
+    size_t N,
+    size_t L,
+    size_t C_in,
+    size_t C_out
 );
 
 void cactus_bilinear_interpolation_f16(const __fp16* input, __fp16* output, size_t src_height, size_t src_width, size_t embed_dim,

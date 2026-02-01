@@ -402,6 +402,8 @@ std::string BPETokenizer::unicode_to_bytes(const std::string& text) const {
         auto it = unicode_to_byte_.find(unicode_char);
         if (it != unicode_to_byte_.end()) {
             result += static_cast<char>(it->second);
+        } else if (unicode_char.size() == 1 && (unsigned char)unicode_char[0] < 128) {
+            result += unicode_char[0];
         } else {
             result += '?';
         }
@@ -518,16 +520,29 @@ std::vector<uint32_t> BPETokenizer::encode(const std::string& text) const {
 
 std::string BPETokenizer::decode(const std::vector<uint32_t>& tokens) const {
     std::string unicode_result;
+    unicode_result.reserve(tokens.size() * 4);
+
     for (uint32_t token_id : tokens) {
-        if (token_id < id_to_token_.size()) {
-            unicode_result += id_to_token_[token_id];
+        if (token_id >= id_to_token_.size()) continue;
+        const std::string& tok = id_to_token_[token_id];
+
+        size_t pos = 0;
+        while (pos < tok.size()) {
+            if (pos + 3 <= tok.size() &&
+                (unsigned char)tok[pos]   == 0xE2 &&
+                (unsigned char)tok[pos+1] == 0x96 &&
+                (unsigned char)tok[pos+2] == 0x81) {
+                unicode_result.push_back(' ');
+                pos += 3;
+            } else {
+                unicode_result.push_back(tok[pos++]);
+            }
         }
     }
 
-    std::string result = unicode_to_bytes(unicode_result);
-
-    return result;
+    return unicode_to_bytes(unicode_result);
 }
+
 
 void BPETokenizer::load_chat_template(const std::string& template_file) {
     std::ifstream file(template_file);

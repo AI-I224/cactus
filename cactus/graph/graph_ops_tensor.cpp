@@ -1,6 +1,7 @@
 #include "graph.h"
 #include "../kernel/kernel.h"
 #include <cstring>
+#include <cmath>
 #include <stdexcept>
 
 void compute_transpose_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map) {
@@ -409,5 +410,30 @@ void compute_bilinear_interpolation_node(GraphNode& node, const std::vector<std:
     }
     else {
         throw std::runtime_error("BILINEAR_INTERPOLATION only supports INT8 and FP16 input precision");
+    }
+}
+
+void compute_persistent_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map) {
+    if (node.input_ids.empty()) {
+        return;
+    }
+
+    auto it = node_index_map.find(node.input_ids[0]);
+    
+    if (it != node_index_map.end()) {
+        const auto& input_buffer = nodes[it->second]->output_buffer;
+        
+        if (!node.output_buffer.get_data()) {
+            node.output_buffer.allocate();
+        }
+        
+        std::memcpy(node.output_buffer.get_data(), 
+                    input_buffer.get_data(), 
+                    input_buffer.byte_size);
+    } else {
+        if (node.output_buffer.get_data()) {
+            return;
+        }
+        throw std::runtime_error("PERSISTENT node input not found and not populated - this should not happen");
     }
 }
