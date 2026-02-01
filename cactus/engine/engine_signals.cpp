@@ -7,6 +7,10 @@
 #include <stdexcept>
 #include <limits>
 
+#ifdef __APPLE__
+#include <Accelerate/Accelerate.h>
+#endif
+
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
 #endif
@@ -133,31 +137,67 @@ static void rfft_f32_1d(const float* input, float* output, const size_t n, const
         }
     }
 
-    if ((n & (n - 1)) == 0 && n >= 4) {
-        std::vector<float> re(n), im(n, 0.0f);
-        std::copy(input, input + n, re.begin());
-
-        fft_radix2(re.data(), im.data(), n);
-
-        for (size_t i = 0; i < out_len; i++) {
-            output[i * 2] = re[i] * norm_factor;
-            output[i * 2 + 1] = im[i] * norm_factor;
+#ifdef __APPLE__
+    {
+        size_t log2n = 0;
+        size_t padded_n = 1;
+        while (padded_n < n) {
+            padded_n <<= 1;
+            log2n++;
         }
-    } else {
-        const float two_pi_over_n = 2.0f * static_cast<float>(M_PI) / static_cast<float>(n);
-        for (size_t i = 0; i < out_len; i++) {
-            float re = 0.0f;
-            float im = 0.0f;
-            const float base = -two_pi_over_n * static_cast<float>(i);
-            for (size_t j = 0; j < n; j++) {
-                const float angle = base * static_cast<float>(j);
-                const float input_val = input[j];
-                re += input_val * std::cos(angle);
-                im += input_val * std::sin(angle);
+
+        FFTSetup fft_setup = vDSP_create_fftsetup(log2n, FFT_RADIX2);
+        if (fft_setup) {
+            std::vector<float> buffer(padded_n, 0.0f);
+            std::copy(input, input + n, buffer.begin());
+
+            DSPSplitComplex split;
+            std::vector<float> real_part(padded_n / 2);
+            std::vector<float> imag_part(padded_n / 2);
+            split.realp = real_part.data();
+            split.imagp = imag_part.data();
+
+            vDSP_ctoz(reinterpret_cast<const DSPComplex*>(buffer.data()), 2, &split, 1, padded_n / 2);
+
+            vDSP_fft_zrip(fft_setup, &split, 1, log2n, FFT_FORWARD);
+
+            float scale = 0.5f * norm_factor;
+
+            output[0] = split.realp[0] * scale * 2.0f;
+            output[1] = 0.0f;
+
+            if (out_len > 1) {
+                size_t nyquist_idx = padded_n / 2;
+                if (nyquist_idx < out_len) {
+                    output[nyquist_idx * 2] = split.imagp[0] * scale * 2.0f;
+                    output[nyquist_idx * 2 + 1] = 0.0f;
+                }
             }
-            output[i * 2] = re * norm_factor;
-            output[i * 2 + 1] = im * norm_factor;
+
+            for (size_t i = 1; i < out_len && i < padded_n / 2; i++) {
+                output[i * 2] = split.realp[i] * scale * 2.0f;
+                output[i * 2 + 1] = split.imagp[i] * scale * 2.0f;
+            }
+
+            vDSP_destroy_fftsetup(fft_setup);
+            return;
         }
+    }
+#endif
+
+    size_t padded_n = 1;
+    while (padded_n < n) {
+        padded_n <<= 1;
+    }
+
+    std::vector<float> re(padded_n, 0.0f), im(padded_n, 0.0f);
+    std::copy(input, input + n, re.begin());
+
+    fft_radix2(re.data(), im.data(), padded_n);
+
+    for (size_t i = 0; i < out_len; i++) {
+        output[i * 2] = re[i] * norm_factor;
+        output[i * 2 + 1] = im[i] * norm_factor;
     }
 }
 

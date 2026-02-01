@@ -503,8 +503,6 @@ private:
 
     bool encoder_ready_ = false;
     size_t last_new_tokens_;
-    std::vector<float> encoder_output_host_;
-    std::vector<size_t> encoder_output_shape_;
     size_t last_conv1_node_ = 0;
     size_t last_conv2_node_ = 0;
     size_t last_encoder_post_norm_node_ = 0;
@@ -514,8 +512,8 @@ private:
     size_t encoder_post_gelu = 0;
 
     std::vector<size_t> encoder_block_out_nodes_;
-    std::vector<uint8_t> encoder_output_bytes_;
-    Precision encoder_output_precision_ = Precision::FP32;
+
+    size_t encoder_output_persistent_ = 0;
 
     std::vector<size_t> suppress_tokens_ = {
     1,
@@ -615,15 +613,8 @@ private:
 
     bool first_decode_step_ = true;
 
-    std::vector<size_t> encoder_k_nodes_;
-    std::vector<size_t> encoder_v_nodes_;
-
-    std::vector<std::vector<uint8_t>> encoder_k_host_;
-    std::vector<std::vector<uint8_t>> encoder_v_host_;
-    std::vector<std::vector<size_t>>  encoder_k_shape_;
-    std::vector<std::vector<size_t>>  encoder_v_shape_;
-    Precision encoder_kv_precision_ = Precision::FP32;
-    bool encoder_kv_ready_ = false;
+    std::vector<size_t> encoder_k_persistent_;
+    std::vector<size_t> encoder_v_persistent_;
 
     std::unique_ptr<npu::NPUEncoder> npu_encoder_;
     bool use_npu_encoder_ = false;

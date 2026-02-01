@@ -299,41 +299,38 @@ Java_com_cactus_Cactus_nativeScoreWindow(JNIEnv* env, jobject, jlong handle,
 JNIEXPORT jlong JNICALL
 Java_com_cactus_Cactus_nativeStreamTranscribeInit(JNIEnv*, jobject, jlong handle) {
     if (handle == 0) return 0;
-    return reinterpret_cast<jlong>(cactus_stream_transcribe_init(reinterpret_cast<cactus_model_t>(handle)));
-}
-
-JNIEXPORT jint JNICALL
-Java_com_cactus_Cactus_nativeStreamTranscribeInsert(JNIEnv* env, jobject, jlong streamHandle, jbyteArray pcmData) {
-    if (streamHandle == 0) return -1;
-
-    jsize pcmSize = env->GetArrayLength(pcmData);
-    jbyte* pcmBytes = env->GetByteArrayElements(pcmData, nullptr);
-
-    int result = cactus_stream_transcribe_insert(
-        reinterpret_cast<cactus_stream_transcribe_t>(streamHandle),
-        reinterpret_cast<const uint8_t*>(pcmBytes),
-        static_cast<size_t>(pcmSize)
-    );
-
-    env->ReleaseByteArrayElements(pcmData, pcmBytes, JNI_ABORT);
-    return result;
+    return reinterpret_cast<jlong>(cactus_stream_transcribe_start(reinterpret_cast<cactus_model_t>(handle), nullptr));
 }
 
 JNIEXPORT jstring JNICALL
-Java_com_cactus_Cactus_nativeStreamTranscribeProcess(JNIEnv* env, jobject, jlong streamHandle, jstring optionsJson) {
+Java_com_cactus_Cactus_nativeStreamTranscribeProcess(JNIEnv* env, jobject, jlong streamHandle, jbyteArray pcmData) {
     if (streamHandle == 0) return env->NewStringUTF("{\"error\":\"Stream not initialized\"}");
 
-    const char* options = jstring_to_cstr(env, optionsJson);
     std::vector<char> buffer(DEFAULT_BUFFER_SIZE);
+    int result;
 
-    int result = cactus_stream_transcribe_process(
-        reinterpret_cast<cactus_stream_transcribe_t>(streamHandle),
-        buffer.data(),
-        buffer.size(),
-        options
-    );
+    if (pcmData != nullptr) {
+        jsize pcmSize = env->GetArrayLength(pcmData);
+        jbyte* pcmBytes = env->GetByteArrayElements(pcmData, nullptr);
 
-    release_jstring(env, optionsJson, options);
+        result = cactus_stream_transcribe_process(
+            reinterpret_cast<cactus_stream_transcribe_t>(streamHandle),
+            reinterpret_cast<const uint8_t*>(pcmBytes),
+            static_cast<size_t>(pcmSize),
+            buffer.data(),
+            buffer.size()
+        );
+
+        env->ReleaseByteArrayElements(pcmData, pcmBytes, JNI_ABORT);
+    } else {
+        result = cactus_stream_transcribe_process(
+            reinterpret_cast<cactus_stream_transcribe_t>(streamHandle),
+            nullptr,
+            0,
+            buffer.data(),
+            buffer.size()
+        );
+    }
 
     if (result < 0) {
         const char* error = cactus_get_last_error();
@@ -345,12 +342,12 @@ Java_com_cactus_Cactus_nativeStreamTranscribeProcess(JNIEnv* env, jobject, jlong
 }
 
 JNIEXPORT jstring JNICALL
-Java_com_cactus_Cactus_nativeStreamTranscribeFinalize(JNIEnv* env, jobject, jlong streamHandle) {
+Java_com_cactus_Cactus_nativeStreamTranscribeStop(JNIEnv* env, jobject, jlong streamHandle) {
     if (streamHandle == 0) return env->NewStringUTF("{\"error\":\"Stream not initialized\"}");
 
     std::vector<char> buffer(DEFAULT_BUFFER_SIZE);
 
-    int result = cactus_stream_transcribe_finalize(
+    int result = cactus_stream_transcribe_stop(
         reinterpret_cast<cactus_stream_transcribe_t>(streamHandle),
         buffer.data(),
         buffer.size()
@@ -363,13 +360,6 @@ Java_com_cactus_Cactus_nativeStreamTranscribeFinalize(JNIEnv* env, jobject, jlon
     }
 
     return env->NewStringUTF(buffer.data());
-}
-
-JNIEXPORT void JNICALL
-Java_com_cactus_Cactus_nativeStreamTranscribeDestroy(JNIEnv*, jobject, jlong streamHandle) {
-    if (streamHandle != 0) {
-        cactus_stream_transcribe_destroy(reinterpret_cast<cactus_stream_transcribe_t>(streamHandle));
-    }
 }
 
 JNIEXPORT jfloatArray JNICALL

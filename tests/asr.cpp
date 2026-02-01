@@ -164,14 +164,46 @@ int transcribe_file(cactus_model_t model, const std::string& audio_path, const s
 
 #ifdef HAVE_SDL2
 
-constexpr int SAMPLE_RATE = 16000;
+constexpr int TARGET_SAMPLE_RATE = 16000;
 constexpr int AUDIO_BUFFER_MS = 100;
 
 struct AudioState {
     std::mutex mutex;
     std::vector<uint8_t> buffer;
     std::atomic<bool> recording{false};
+    int actual_sample_rate{TARGET_SAMPLE_RATE};
 };
+
+std::vector<uint8_t> resample_audio(const std::vector<uint8_t>& input, int source_rate, int target_rate) {
+    if (source_rate == target_rate || input.empty()) {
+        return input;
+    }
+
+    size_t num_input_samples = input.size() / 2;
+    if (num_input_samples == 0) return input;
+
+    const int16_t* input_samples = reinterpret_cast<const int16_t*>(input.data());
+
+    double ratio = static_cast<double>(target_rate) / source_rate;
+    size_t num_output_samples = static_cast<size_t>(num_input_samples * ratio);
+    if (num_output_samples == 0) return {};
+
+    std::vector<int16_t> output_samples(num_output_samples);
+
+    for (size_t i = 0; i < num_output_samples; i++) {
+        double src_idx = i / ratio;
+        size_t idx0 = static_cast<size_t>(src_idx);
+        size_t idx1 = std::min(idx0 + 1, num_input_samples - 1);
+        double frac = src_idx - idx0;
+
+        double sample = input_samples[idx0] * (1.0 - frac) + input_samples[idx1] * frac;
+        output_samples[i] = static_cast<int16_t>(std::clamp(sample, -32768.0, 32767.0));
+    }
+
+    std::vector<uint8_t> result(num_output_samples * 2);
+    std::memcpy(result.data(), output_samples.data(), result.size());
+    return result;
+}
 
 AudioState g_audio_state;
 
@@ -205,19 +237,25 @@ int run_live_transcription(cactus_model_t model) {
 
     SDL_AudioSpec want, have;
     SDL_zero(want);
-    want.freq = SAMPLE_RATE;
+    want.freq = TARGET_SAMPLE_RATE;
     want.format = AUDIO_S16LSB;
     want.channels = 1;
-    want.samples = (SAMPLE_RATE * AUDIO_BUFFER_MS) / 1000;
+    want.samples = (TARGET_SAMPLE_RATE * AUDIO_BUFFER_MS) / 1000;
     want.callback = audio_callback;
     want.userdata = nullptr;
 
-    SDL_AudioDeviceID device = SDL_OpenAudioDevice(nullptr, 1, &want, &have, 0);
+    SDL_AudioDeviceID device = SDL_OpenAudioDevice(nullptr, 1, &want, &have, SDL_AUDIO_ALLOW_FREQUENCY_CHANGE);
     if (device == 0) {
         std::cerr << colored("Error: ", Color::RED + Color::BOLD)
                   << "Failed to open audio device: " << SDL_GetError() << "\n";
         SDL_Quit();
         return 1;
+    }
+
+    g_audio_state.actual_sample_rate = have.freq;
+    if (have.freq != TARGET_SAMPLE_RATE) {
+        std::cout << colored("Note: ", Color::YELLOW) << "Audio device uses " << have.freq
+                  << "Hz, will resample to " << TARGET_SAMPLE_RATE << "Hz\n";
     }
 
     cactus_stream_transcribe_t stream = cactus_stream_transcribe_start(
@@ -267,10 +305,14 @@ int run_live_transcription(cactus_model_t model) {
             }
 
             if (!audio_chunk.empty()) {
+                std::vector<uint8_t> resampled = resample_audio(
+                    audio_chunk, g_audio_state.actual_sample_rate, TARGET_SAMPLE_RATE
+                );
+
                 int process_result = cactus_stream_transcribe_process(
                     stream,
-                    audio_chunk.data(),
-                    audio_chunk.size(),
+                    resampled.data(),
+                    resampled.size(),
                     response_buffer.data(),
                     response_buffer.size()
                 );
@@ -280,7 +322,6 @@ int run_live_transcription(cactus_model_t model) {
                     std::string confirmed = extract_json_value(json_str, "confirmed");
                     std::string pending = extract_json_value(json_str, "pending");
 
-                    // Clear line and show transcription
                     std::cout << Color::CLEAR_LINE;
                     if (!confirmed_text.empty()) {
                         std::cout << colored(confirmed_text, Color::GREEN);
@@ -344,8 +385,8 @@ int main(int argc, char* argv[]) {
         std::cerr << colored("Error: ", Color::RED + Color::BOLD) << "Missing model path\n";
         std::cerr << "Usage: " << argv[0] << " <model_path> [audio_file]\n";
         std::cerr << "\nModes:\n";
-        std::cerr << "  " << argv[0] << " weights/moonshine-base              # Live microphone transcription\n";
-        std::cerr << "  " << argv[0] << " weights/moonshine-base audio.wav    # Transcribe single file\n";
+        std::cerr << "  " << argv[0] << " weights/whisper-small              # Live microphone transcription\n";
+        std::cerr << "  " << argv[0] << " weights/whisper-small audio.wav    # Transcribe single file\n";
         return 1;
     }
 

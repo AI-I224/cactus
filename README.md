@@ -96,10 +96,10 @@ graph.hard_reset();
 
 | Device | LFM2.5-1.2B<br>(1k-Prefill/100-Decode) | LFM2.5-VL-1.6B<br>(256px-Latency & Decode) | Whisper-Small<br>(30s-audio-Latency & Decode)
 |--------|--------|--------|----------|
-| Mac M4 Pro | 582/77 tps| 0.2s & 76tps | 0.6s & 111tps |
+| Mac M4 Pro | 582/77 tps| 0.2s & 76tps | 0.1s & 111tps |
 | iPad/Mac M4 | - | - | - |
 | iPhone 17 Pro | 300/33 tps | 0.3s & 33tps | 0.6s & 114tps |
-| Galaxy S25 Ultra | 226/35 tps | 2.6s & 35tps | 2.9s & 85tps |
+| Galaxy S25 Ultra | 226/36 tps | 2.6s & 33tps | 2.3s & 90tps |
 | Pixel 10 Pro | - | - | - |
 | Vivo X200 Pro | - | - | - |
 
