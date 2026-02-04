@@ -43,6 +43,7 @@ jobs:
           python -m src.publish_to_hf \
             --version ${{ steps.version.outputs.tag }} \
             --org Cactus-Compute \
+            --precision INT8 \
             --bits 8
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
