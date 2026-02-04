@@ -15,7 +15,7 @@ jobs:
           if [ "${{ github.event_name }}" == "release" ]; then
             echo "tag=${{ github.event.release.tag_name }}" >> $GITHUB_OUTPUT
           else
-            echo "tag=$(gh release view --json tagName -q .tagName)" >> $GITHUB_OUTPUT
+            echo "tag=$(gh release view --repo ${{ github.repository }} --json tagName -q .tagName)" >> $GITHUB_OUTPUT
           fi
         env:
           GH_TOKEN: ${{ github.token }}
