@@ -196,6 +196,7 @@ if ! gem list xcodeproj -i; then
         echo "Failed to install xcodeproj gem"
         echo "To fix this:"
         echo "  brew install rbenv ruby-build"
+        echo "  rbenv init"
         echo "  rbenv install 2.6.10"
         echo "  rbenv global 2.6.10"
         echo "  Restart your terminal"
