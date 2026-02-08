@@ -99,6 +99,7 @@ graph.hard_reset();
 | Mac M4 Pro | 582tps/77tps (76MB RAM) | 0.2s/76tps (87MB RAM) | 0.1s/111tps (73MB RAM) |
 | iPad/Mac M4 | - | - | - |
 | iPhone 17 Pro | 300tps/33tps (108MB RAM)| 0.3s/33tps (156MB RAM) | 0.3s/114tps (177MB RAM)|
+| iPhone 15 Plus | 181tps/32tps (176MB RAM) | 3.9s/28tps (519MB RAM) | - |
 | Galaxy S25 Ultra | 226tps/36tps (1.2GB RAM) | 2.6s/33tps (2GB RAM) | 2.3s/90tps (363MB RAM) |
 | Pixel 10 Pro | - | - | - |
 | Vivo X200 Pro | - | - | - |
@@ -106,6 +107,7 @@ graph.hard_reset();
 | Device | LFM2-350m<br>(1k-Prefill/100-Decode) | LFM2-VL-450m<br>(256px-Latency & Decode) | Moonshine-Base-67m<br>(30s-audio-Latency & Decode)
 |--------|--------|--------|----------|
 | iPad/Mac M1 | - | - | - |
+| iPhone 15 Plus | 598tps/88tps (333MB RAM) | 0.7s/91tps (216MB RAM) | - |
 | iPhone 13 Mini | - | - | - |
 | Galaxy A56 | - | - | - |
 | Pixel 6a | 218tps/44tps (395MB RAM)| 2.5s/36tps (631MB RAM) | 1.5s/189tps (111MB RAM)|
