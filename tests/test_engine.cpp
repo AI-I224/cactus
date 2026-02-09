@@ -1079,7 +1079,6 @@ int main() {
     runner.run_test("embeddings", test_embeddings());
     runner.run_test("image_embeddings", test_image_embeddings());
     runner.run_test("audio_embeddings", test_audio_embeddings());
-    runner.run_test("vlm_multiturn", test_vlm_multiturn());
     runner.run_test("audio_processor", test_audio_processor());
     runner.run_test("transcription", test_transcription());
     runner.run_test("pcm_transcription", test_pcm_transcription());

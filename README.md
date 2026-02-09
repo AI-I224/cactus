@@ -96,9 +96,13 @@ graph.hard_reset();
 
 | Device | LFM2.5-1.2B<br>(1k-Prefill/100-Decode) | LFM2.5-VL-1.6B<br>(256px-Latency & Decode) | Whisper-Small-244m<br>(30s-audio-Latency & Decode)
 |--------|--------|--------|----------|
-| Mac M4 Pro | 582tps/77tps (76MB RAM) | 0.2s/76tps (87MB RAM) | 0.1s/111tps (73MB RAM) |
+| Mac M4 Pro | 582tps/77tps (76MB RAM) | 0.2s/76tps (87MB RAM) | 0.1s/119tps (73MB RAM) |
 | iPad/Mac M4 | - | - | - |
+<<<<<<< HEAD
 | iPad/Mac M2 | 315tps/42tps (181MB RAM) | 2.0s/42tps (426MB RAM) | 2.1s/86tps (160MB RAM) |
+=======
+| iPad/Mac M2 | 315tps/42tps (181MB RAM) | 2.0s/42tps (426MB RAM) | - |
+>>>>>>> 20f44441c0e9c9604b649a9517a164c98869868e
 | iPhone 17 Pro | 300tps/33tps (108MB RAM)| 0.3s/33tps (156MB RAM) | 0.3s/114tps (177MB RAM)|
 | Galaxy S25 Ultra | 226tps/36tps (1.2GB RAM) | 2.6s/33tps (2GB RAM) | 2.3s/90tps (363MB RAM) |
 | Pixel 10 Pro | - | - | - |
@@ -106,8 +110,12 @@ graph.hard_reset();
 
 | Device | LFM2-350m<br>(1k-Prefill/100-Decode) | LFM2-VL-450m<br>(256px-Latency & Decode) | Moonshine-Base-67m<br>(30s-audio-Latency & Decode)
 |--------|--------|--------|----------|
+<<<<<<< HEAD
 | iPad/Mac M1 | - | - | - |
 | iPad/Mac M2 | 998tps/101tps (334MB RAM) | 0.5s/109tps (146MB RAM) | 0.7s/395tps (201MB RAM) |
+=======
+| iPad/Mac M2 | 998tps/101tps (334MB RAM) | 0.5s/109tps (146MB RAM) | - |
+>>>>>>> 20f44441c0e9c9604b649a9517a164c98869868e
 | iPhone 13 Mini | - | - | - |
 | Galaxy A56 | - | - | - |
 | Pixel 6a | 218tps/44tps (395MB RAM)| 2.5s/36tps (631MB RAM) | 1.5s/189tps (111MB RAM)|
